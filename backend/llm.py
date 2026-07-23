@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Type, TypeVar
+from typing import Callable, Optional, Type, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -25,6 +25,11 @@ from pydantic import BaseModel, ValidationError
 import openrouter
 
 T = TypeVar("T", bound=BaseModel)
+
+# A guard reports why a parsed result is unusable (None = fine); a repair
+# salvages one. See `parse_json`.
+Guard = Callable[[T], Optional[str]]
+Repair = Callable[[T], T]
 
 OLLAMA_URL = os.getenv("RC_OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.getenv("RC_OLLAMA_MODEL", "qwen3:8b")
@@ -361,14 +366,9 @@ async def _anthropic_parse(
 # Public API
 # ---------------------------------------------------------------------------
 
-async def parse_json(
-    schema: Type[T],
-    system: str,
-    user: str,
-    max_tokens: int = 4096,
-    thinking: bool = False,
+async def _dispatch(
+    schema: Type[T], system: str, user: str, max_tokens: int, thinking: bool
 ) -> T:
-    """One structured-output call; returns a validated instance of `schema`."""
     provider = active_engine()["provider"]
     if provider == "anthropic":
         return await _anthropic_parse(schema, system, user, max_tokens, thinking)
@@ -378,6 +378,49 @@ async def parse_json(
         except openrouter.OpenRouterError as exc:
             raise LLMError(str(exc)) from exc
     return await _ollama_parse(schema, system, user, max_tokens)
+
+
+async def parse_json(
+    schema: Type[T],
+    system: str,
+    user: str,
+    max_tokens: int = 4096,
+    thinking: bool = False,
+    guard: Guard[T] | None = None,
+    repair: Repair[T] | None = None,
+    retry_instruction: str = "",
+) -> T:
+    """One structured-output call; returns a validated instance of `schema`.
+
+    `guard` inspects the parsed result and returns a complaint when the content
+    is unusable for a reason the schema cannot express — meta-commentary being
+    the case this exists for (see meta_guard). A complaint costs one retry with
+    the complaint fed back into the system prompt. If that retry is also bad,
+    `repair` salvages what came back rather than raising: these guards run at
+    the tail of multi-minute pipelines, where discarding the whole job over a
+    cosmetic defect is the worse failure.
+    """
+    result = await _dispatch(schema, system, user, max_tokens, thinking)
+    if guard is None:
+        return result
+
+    complaint = guard(result)
+    if complaint is None:
+        return result
+
+    retry_system = system + "\n\n" + (
+        retry_instruction.format(leak=complaint)
+        if retry_instruction
+        else f"Your previous reply was rejected: {complaint}. Try again."
+    )
+    try:
+        retried = await _dispatch(schema, retry_system, user, max_tokens, thinking)
+    except LLMError:
+        return repair(result) if repair else result
+
+    if guard(retried) is None:
+        return retried
+    return repair(retried) if repair else retried
 
 
 async def embeddings_status() -> tuple[bool, str | None]:

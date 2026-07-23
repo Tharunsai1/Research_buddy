@@ -12,6 +12,7 @@ import asyncio
 import time
 from typing import Any, Callable
 
+import meta_guard
 from fulltext import FullText, trim_words
 from llm import parse_json
 from models import (
@@ -30,6 +31,15 @@ SECTION_WORD_LIMIT = 1400
 
 Progress = Callable[[str], None]
 Partial = Callable[[str, Any], None]
+
+# Every stage here writes prose the reader sees directly, so all of them are
+# checked for the model narrating its own instructions instead of answering.
+# The guard is free when the output is clean — it only costs a retry on a hit.
+_NO_META = {
+    "guard": meta_guard.find_leak_in,
+    "repair": meta_guard.scrub,
+    "retry_instruction": meta_guard.RETRY_INSTRUCTION,
+}
 
 
 def _paper_header(paper: Paper) -> str:
@@ -65,6 +75,7 @@ async def _digest_section(paper: Paper, section, index: int, total: int) -> Sect
             f"{trim_words(section.text, SECTION_WORD_LIMIT)}"
         ),
         max_tokens=900,
+        **_NO_META,
     )
     return SectionDigest(
         title=section.title,
@@ -126,6 +137,7 @@ async def run_deep_dive(
         ),
         user=f"{_paper_header(paper)}\n\nAbstract:\n{paper.abstract}\n\nSection digests:\n\n{brief}",
         max_tokens=1600,
+        **_NO_META,
     )
     emit("synthesis", synthesis.model_dump())
 
@@ -144,6 +156,7 @@ async def run_deep_dive(
             f"Results:\n{synthesis.results_detail}\n\nSection digests:\n\n{brief}"
         ),
         max_tokens=1600,
+        **_NO_META,
     )
     emit("explanations", explanations.model_dump())
 
@@ -158,6 +171,7 @@ async def run_deep_dive(
         ),
         user=f"{_paper_header(paper)}\n\nAbstract:\n{paper.abstract}\n\nSection digests:\n\n{brief}",
         max_tokens=2000,
+        **_NO_META,
     )
     emit("glossary", [t.model_dump() for t in glossary.terms])
 
@@ -165,9 +179,10 @@ async def run_deep_dive(
     critique = await parse_json(
         CritiqueOut,
         system=(
-            "You are a rigorous but fair peer reviewer. Write directly about the paper's "
-            "claims and evidence -- never mention 'the digest', 'the summary', or 'the "
-            "provided text'. Prefer specific, checkable criticisms (missing baseline, single "
+            "You are a rigorous but fair peer reviewer. Write the finished review only: "
+            "never restate the task, narrate your process, refer to yourself, or mention "
+            "'the digest', 'the summary', or 'the provided text'. Start directly with the "
+            "substance. Prefer specific, checkable criticisms (missing baseline, single "
             "dataset, cost not reported) over generic complaints, and cite the paper's own "
             "numbers wherever you can. If something you would want is absent, say the paper "
             "does not report it."
@@ -177,6 +192,7 @@ async def run_deep_dive(
             f"Results:\n{synthesis.results_detail}\n\nSection digests:\n\n{brief}"
         ),
         max_tokens=1800,
+        **_NO_META,
     )
     emit("critique", critique.model_dump())
 

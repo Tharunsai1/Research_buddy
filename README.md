@@ -177,6 +177,20 @@ npm install
 npm run dev                     # http://localhost:3000
 ```
 
+### 3. Tests (optional)
+
+```powershell
+cd backend
+.venv\Scripts\pip install pytest pytest-asyncio
+.venv\Scripts\python -m pytest
+```
+
+The suite covers the deterministic, LLM-free logic — card scheduling and id
+conventions, search diffing, the field report, map partitioning, the storage
+layer, and the meta-commentary guard. Provider calls are stubbed, so it makes
+no network requests, costs nothing, and runs in well under a second. Tests are
+sandboxed to a tmp directory and never read or write `backend/data/`.
+
 The frontend talks to the backend at `http://127.0.0.1:8321` by default —
 override with `NEXT_PUBLIC_API_BASE` in `frontend/.env.local` if you move it.
 If you run the frontend on a port other than 3000, nothing else changes (the
@@ -227,6 +241,9 @@ backend/
   learning.py      flashcards, SM-2 scheduling, answer grading, field digests
   store.py         JSON persistence + in-memory job registry
   models.py        pydantic schemas (also used as LLM structured outputs)
+  meta_guard.py    rejects model meta-commentary ("The user wants me to…")
+                   before it reaches the reader; drives a retry in llm.py
+  tests/           pytest suite over the LLM-free logic (see Setup step 3)
 frontend/
   app/page.tsx                    single-page UI (search → pipeline → results)
   components/ReadingMap.tsx       force-directed map (click to open, drag to pin)

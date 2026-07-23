@@ -30,6 +30,8 @@ from typing import Any, Type, TypeVar
 import httpx
 from pydantic import BaseModel, ValidationError
 
+import meta_guard
+
 T = TypeVar("T", bound=BaseModel)
 
 URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -262,31 +264,16 @@ def repair_control_chars(text: str) -> str:
 
 # Reasoning-tuned models sometimes leak their opening chain-of-thought
 # ("The user wants me to write a peer review..." / "I need to act as...") into
-# the first string field of an otherwise well-formed structured response,
-# instead of answering it. This is valid JSON that passes schema validation,
-# so it has to be caught separately from JSON/schema errors.
-_LEAKED_INSTRUCTION = re.compile(
-    r"^\s*(the user (wants|is asking|requested|needs)|i need to\b|i should\b|"
-    r"i will\b|i'll\b|let me\b|okay,? (i|so)\b|as an ai\b)",
-    re.IGNORECASE,
-)
-
-
-def _leaked_instruction(value: Any) -> str | None:
-    """Recursively scan a validated model's fields for echoed system-prompt text."""
-    if isinstance(value, str):
-        return value[:80] if _LEAKED_INSTRUCTION.match(value) else None
-    if isinstance(value, dict):
-        for item in value.values():
-            found = _leaked_instruction(item)
-            if found:
-                return found
-    elif isinstance(value, list):
-        for item in value:
-            found = _leaked_instruction(item)
-            if found:
-                return found
-    return None
+# a string field of an otherwise well-formed structured response, instead of
+# answering it. This is valid JSON that passes schema validation, so it has to
+# be caught separately from JSON/schema errors.
+#
+# The patterns live in meta_guard because the same failure appears on Ollama's
+# reasoning models too — one list, checked here inside the provider's own
+# repair loop (cheap, it reuses the existing retry conversation) and again at
+# the llm.parse_json layer, which is what catches it for the other providers.
+def _leaked_instruction(parsed: BaseModel) -> str | None:
+    return meta_guard.find_leak_in(parsed)
 
 
 def extract_json(text: str) -> str | None:
@@ -463,6 +450,7 @@ async def parse_json(
 
     raw = ""
     problem = ""
+    leaked_parse: T | None = None
     for attempt in range(3):
         try:
             data = await _post(payload)
@@ -500,9 +488,14 @@ async def parse_json(
             except (json.JSONDecodeError, ValidationError) as exc:
                 problem = str(exc)[:400]
             else:
-                leak = _leaked_instruction(parsed.model_dump())
+                leak = _leaked_instruction(parsed)
                 if leak:
                     problem = f"response echoed system-prompt/task framing instead of answering it (starts: {leak!r})"
+                    # Schema-valid, just contaminated. Hold on to it: if every
+                    # attempt leaks, returning this beats raising, because the
+                    # llm.parse_json guard can strip the preamble and keep
+                    # whatever real content followed it.
+                    leaked_parse = parsed
                 else:
                     return parsed
         else:
@@ -519,6 +512,14 @@ async def parse_json(
                 ),
             },
         ]
+
+    if leaked_parse is not None:
+        # Every attempt leaked, but the last one was still schema-valid.
+        # Degrade instead of raising: the caller's guard strips the preamble,
+        # and losing a whole multi-minute deep dive over a contaminated field
+        # is the worse outcome. A field with nothing left after scrubbing is
+        # labelled rather than shown (see meta_guard.UNAVAILABLE).
+        return leaked_parse
 
     raise OpenRouterError(
         f"Model did not return valid structured output after 3 attempts ({problem}). "
