@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from datetime import date
 
 import store
 from llm import parse_json
@@ -295,3 +296,138 @@ async def compare_papers(
         ),
         max_tokens=2500,
     )
+
+
+# ---------------------------------------------------------------------------
+# 4. Diff two of the reader's own past searches
+# ---------------------------------------------------------------------------
+
+def _paper_briefs(ids: set[str], papers: dict[str, Paper]) -> list[dict]:
+    return sorted(
+        ({"id": pid, "title": papers[pid].title} for pid in ids if pid in papers),
+        key=lambda p: p["title"],
+    )
+
+
+def diff_searches(a: dict, b: dict, papers: dict[str, Paper]) -> dict:
+    """Structural diff between two saved searches — free, no LLM call.
+
+    Re-running the same query later (or running a related one) produces a new
+    synthesis over a library that has grown since; this shows what actually
+    changed rather than making the reader eyeball two overviews side by side.
+    """
+    a_ids, b_ids = set(a.get("paper_ids", [])), set(b.get("paper_ids", []))
+    a_clusters = {c["name"] for c in a.get("clusters", [])}
+    b_clusters = {c["name"] for c in b.get("clusters", [])}
+    a_consensus = set(a.get("consensus", []))
+    b_consensus = set(b.get("consensus", []))
+    a_tensions = {t["name"] for t in a.get("tensions", [])}
+    b_tensions = {t["name"] for t in b.get("tensions", [])}
+    a_problems = {p["title"] for p in a.get("open_problems", [])}
+    b_problems = {p["title"] for p in b.get("open_problems", [])}
+
+    def meta(search: dict, ids: set[str]) -> dict:
+        return {
+            "id": search["id"],
+            "query": search["query"],
+            "title": search["title"],
+            "created_at": search["created_at"],
+            "paper_count": len(ids),
+        }
+
+    return {
+        "a": meta(a, a_ids),
+        "b": meta(b, b_ids),
+        "shared_paper_count": len(a_ids & b_ids),
+        "new_papers": _paper_briefs(b_ids - a_ids, papers),
+        "dropped_papers": _paper_briefs(a_ids - b_ids, papers),
+        "clusters_added": sorted(b_clusters - a_clusters),
+        "clusters_removed": sorted(a_clusters - b_clusters),
+        "consensus_added": sorted(b_consensus - a_consensus),
+        "consensus_removed": sorted(a_consensus - b_consensus),
+        "tensions_added": sorted(b_tensions - a_tensions),
+        "tensions_removed": sorted(a_tensions - b_tensions),
+        "open_problems_added": sorted(b_problems - a_problems),
+        "open_problems_removed": sorted(a_problems - b_problems),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 5. Field report export
+# ---------------------------------------------------------------------------
+
+_STAGE_LABEL = {"foundation": "Foundations", "core": "Core methods", "frontier": "Frontier"}
+
+
+def build_field_report(search: dict, papers: dict[str, Paper], card_stats: dict) -> str:
+    """Bundle a search's landscape + reading order + flashcard progress into
+    one exportable Markdown document — no LLM call, everything here already
+    exists from earlier synthesis and study-deck use.
+    """
+    lines: list[str] = [f"# {search.get('title') or search.get('query')}", ""]
+    lines.append(
+        f'*Field report generated {date.today().isoformat()} · query: '
+        f'"{search.get("query", "")}" · {len(search.get("paper_ids") or [])} papers*'
+    )
+    lines.append("")
+
+    if search.get("overview"):
+        lines += ["## Overview", "", search["overview"], ""]
+
+    if search.get("clusters"):
+        lines += ["## Method clusters", ""]
+        for cluster in search["clusters"]:
+            lines.append(f"### {cluster['name']}")
+            lines.append("")
+            if cluster.get("description"):
+                lines += [cluster["description"], ""]
+            for pid in cluster.get("paper_ids") or []:
+                paper = papers.get(pid)
+                if paper is None:
+                    continue
+                authors = ", ".join(paper.authors[:3]) + (" et al." if len(paper.authors) > 3 else "")
+                lines.append(f"- [{paper.title}]({paper.arxiv_url}) — {authors} ({paper.published[:4]})")
+            lines.append("")
+
+    if search.get("tensions"):
+        lines += ["## Tensions", ""]
+        for tension in search["tensions"]:
+            lines.append(f"**{tension['name']}** — {tension.get('description', '')}")
+            lines.append("")
+
+    if search.get("consensus"):
+        lines += ["## Consensus", ""]
+        lines += [f"- {statement}" for statement in search["consensus"]]
+        lines.append("")
+
+    if search.get("open_problems"):
+        lines += ["## Open problems", ""]
+        for problem in search["open_problems"]:
+            lines.append(f"**{problem['title']}** — {problem.get('description', '')}")
+            lines.append("")
+
+    if search.get("reading_order"):
+        lines += ["## Suggested reading order", ""]
+        for stage_key, stage_label in _STAGE_LABEL.items():
+            steps = [s for s in search["reading_order"] if s.get("stage") == stage_key]
+            if not steps:
+                continue
+            lines.append(f"### {stage_label}")
+            lines.append("")
+            for index, step in enumerate(steps, start=1):
+                paper = papers.get(step["paper_id"])
+                title = paper.title if paper else step["paper_id"]
+                lines.append(f"{index}. **{title}** — {step.get('why', '')}")
+            lines.append("")
+
+    lines += ["## Study progress", ""]
+    lines.append(
+        f"- {card_stats['total']} flashcards "
+        f"({card_stats['relationship']} relationship, {card_stats['per_paper']} per-paper)"
+    )
+    lines.append(f"- {card_stats['reviewed']} reviewed at least once · {card_stats['due']} due now")
+    if card_stats.get("avg_score") is not None:
+        lines.append(f"- Average score so far: {card_stats['avg_score']:.0f}/100")
+    lines.append("")
+
+    return "\n".join(lines)

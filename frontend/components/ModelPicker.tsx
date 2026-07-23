@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
-import type { Engine, Health } from "@/lib/types";
+import type { Engine, Health, OpenRouterUsage } from "@/lib/types";
 
 interface Props {
   health: Health | null;
@@ -17,6 +17,7 @@ interface Props {
 export default function ModelPicker({ health, busy, onSwitched }: Props) {
   const [engines, setEngines] = useState<Engine[]>([]);
   const [active, setActive] = useState<string | null>(null);
+  const [usage, setUsage] = useState<OpenRouterUsage | null>(null);
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -28,11 +29,20 @@ export default function ModelPicker({ health, busy, onSwitched }: Props) {
       .then((result) => {
         setEngines(result.engines);
         setActive(result.active);
+        setUsage(result.openrouter_usage ?? null);
       })
       .catch(() => setEngines([]));
   }, []);
 
   useEffect(load, [load]);
+
+  // The per-minute rate limit is enforced live and never surfaces here; the
+  // per-day cap has no such backpressure, so keep usage roughly fresh as the
+  // session goes on rather than only reading it once at mount.
+  useEffect(() => {
+    const id = setInterval(load, 60_000);
+    return () => clearInterval(id);
+  }, [load]);
 
   // Keep in sync when health is refreshed elsewhere.
   useEffect(() => {
@@ -109,6 +119,14 @@ export default function ModelPicker({ health, busy, onSwitched }: Props) {
         <span className="text-xs text-stone-400">
           {current?.provider === "ollama" ? "local" : "hosted"}
         </span>
+        {current?.provider === "openrouter" && usage?.near_cap ? (
+          <span
+            title={`${usage.used}/${usage.cap} OpenRouter requests used today — close to the free-tier daily cap`}
+            className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700"
+          >
+            ⚠ {usage.remaining} left today
+          </span>
+        ) : null}
         <span aria-hidden className="text-stone-400">
           ▾
         </span>
@@ -144,6 +162,19 @@ export default function ModelPicker({ health, busy, onSwitched }: Props) {
                 <span className="mt-0.5 block pl-4 font-mono text-[10px] text-stone-400">
                   {engine.model}
                 </span>
+                {engine.provider === "openrouter" && usage ? (
+                  <span
+                    className={
+                      usage.near_cap
+                        ? "mt-1 block pl-4 text-[10px] font-medium text-amber-600"
+                        : "mt-1 block pl-4 text-[10px] text-stone-400"
+                    }
+                  >
+                    {usage.near_cap ? "⚠ " : ""}
+                    {usage.used}/{usage.cap} requests used today
+                    {usage.near_cap ? " — close to the free-tier daily cap" : ""}
+                  </span>
+                ) : null}
               </button>
             );
           })}

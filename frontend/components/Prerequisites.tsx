@@ -22,6 +22,12 @@ export default function Prerequisites({
   const [adding, setAdding] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
+  // Papers added this session, with an Undo action — a wrong pick (wrong
+  // cluster, wrong search entirely) previously had no way back out short of
+  // asking for a manual fix.
+  const [recentlyAdded, setRecentlyAdded] = useState<
+    { arxiv_id: string; title: string; undoing: boolean }[]
+  >([]);
 
   const load = useCallback(() => {
     api
@@ -48,6 +54,10 @@ export default function Prerequisites({
       setItems((current) =>
         (current ?? []).filter((p) => p.arxiv_id !== prerequisite.arxiv_id),
       );
+      setRecentlyAdded((r) => [
+        { arxiv_id: prerequisite.arxiv_id, title: prerequisite.title, undoing: false },
+        ...r,
+      ]);
       onAdded();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -56,8 +66,25 @@ export default function Prerequisites({
     }
   };
 
+  const undo = async (arxiv_id: string) => {
+    setRecentlyAdded((r) =>
+      r.map((p) => (p.arxiv_id === arxiv_id ? { ...p, undoing: true } : p)),
+    );
+    setError(null);
+    try {
+      await api.removePaper(arxiv_id);
+      setRecentlyAdded((r) => r.filter((p) => p.arxiv_id !== arxiv_id));
+      onAdded();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setRecentlyAdded((r) =>
+        r.map((p) => (p.arxiv_id === arxiv_id ? { ...p, undoing: false } : p)),
+      );
+    }
+  };
+
   if (enrichedCount === 0 || items === null) return null;
-  if (items.length === 0) return null;
+  if (items.length === 0 && recentlyAdded.length === 0) return null;
 
   const shown = expanded ? items : items.slice(0, 5);
 
@@ -73,6 +100,28 @@ export default function Prerequisites({
         <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">
           {error}
         </div>
+      ) : null}
+
+      {recentlyAdded.length > 0 ? (
+        <ul className="space-y-1.5">
+          {recentlyAdded.map((item) => (
+            <li
+              key={item.arxiv_id}
+              className="flex items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50/60 px-4 py-2 text-sm"
+            >
+              <span className="min-w-0 truncate text-emerald-800">
+                Added <span className="font-medium">{item.title}</span> to your map
+              </span>
+              <button
+                onClick={() => undo(item.arxiv_id)}
+                disabled={item.undoing}
+                className="shrink-0 text-xs font-medium text-emerald-700 underline underline-offset-2 hover:text-emerald-900 disabled:opacity-50"
+              >
+                {item.undoing ? "Undoing…" : "Undo"}
+              </button>
+            </li>
+          ))}
+        </ul>
       ) : null}
 
       {adding ? (

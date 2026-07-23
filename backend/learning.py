@@ -43,6 +43,47 @@ def _glossary_cards(paper_id: str, deep: dict) -> list[Flashcard]:
     return cards
 
 
+_EDGE_VERB = {
+    "builds_on": "build on",
+    "compares_to": "compare to",
+    "complements": "complement",
+    "evaluates": "evaluate",
+    "extends": "extend",
+}
+
+
+def relationship_cards(search: dict, papers: dict[str, Paper]) -> list[Flashcard]:
+    """Cross-paper cards from a search's own relationship edges — no LLM call.
+
+    Definition/concept/result/critique cards test one paper at a time; these
+    test whether the reader understands how the papers in a cluster relate to
+    each other. The edge descriptions already exist from landscape synthesis,
+    so this is free and instant rather than another generation pass.
+    """
+    cards: list[Flashcard] = []
+    for index, edge in enumerate(search.get("edges") or []):
+        source = papers.get(edge.get("source", ""))
+        target = papers.get(edge.get("target", ""))
+        description = (edge.get("description") or "").strip()
+        if not source or not target or not description:
+            continue
+        verb = _EDGE_VERB.get(edge.get("kind", ""), "relate to")
+        cards.append(
+            Flashcard(
+                # /api/cards/grade extracts the paper id from the part of a
+                # card id before the first colon — matching that convention
+                # (source id first) is what makes a relationship card gradable.
+                id=f"{source.id}:rel:{search['id']}:{index}",
+                paper_id=source.id,
+                related_paper_id=target.id,
+                question=f'How does "{source.title}" {verb} "{target.title}"?',
+                answer=description,
+                kind="relationship",
+            )
+        )
+    return cards
+
+
 async def generate_cards(paper: Paper, extraction: Extraction | None) -> list[Flashcard]:
     deep = store.load_deep_dive(paper.id)
     cards: list[Flashcard] = []

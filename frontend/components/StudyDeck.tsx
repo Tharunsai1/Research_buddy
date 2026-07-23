@@ -5,7 +5,9 @@ import { api, downloadFile } from "@/lib/api";
 import type { Flashcard, Grade, Paper } from "@/lib/types";
 
 interface Props {
+  searchId: string;
   paperIds: string[];
+  clusters: { name: string; paper_ids: string[] }[];
   papers: Record<string, Paper>;
   read: string[];
 }
@@ -17,7 +19,10 @@ const KIND_STYLE: Record<string, string> = {
   concept: "bg-violet-50 text-violet-700 border-violet-200",
   result: "bg-emerald-50 text-emerald-700 border-emerald-200",
   critique: "bg-amber-50 text-amber-800 border-amber-200",
+  relationship: "bg-indigo-50 text-indigo-700 border-indigo-200",
 };
+
+const ALL_SCOPE = "__all__";
 
 const VERDICT_STYLE: Record<Grade["verdict"], string> = {
   correct: "border-emerald-200 bg-emerald-50 text-emerald-800",
@@ -25,15 +30,18 @@ const VERDICT_STYLE: Record<Grade["verdict"], string> = {
   incorrect: "border-red-200 bg-red-50 text-red-800",
 };
 
-export default function StudyDeck({ paperIds, papers, read }: Props) {
+export default function StudyDeck({ searchId, paperIds, clusters, papers, read }: Props) {
   const [mode, setMode] = useState<Mode>("browse");
   const [cards, setCards] = useState<Flashcard[]>([]);
   const [dueCount, setDueCount] = useState(0);
-  const [cardPapers, setCardPapers] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [revealed, setRevealed] = useState<Set<string>>(new Set());
+  // Which papers to draw cards from: the whole search, or one cluster — lets
+  // a quiz test whether the reader understands how a sub-theme's papers
+  // relate, not just each paper in isolation.
+  const [scope, setScope] = useState<string>(ALL_SCOPE);
 
   // quiz state
   const [queue, setQueue] = useState<Flashcard[]>([]);
@@ -47,7 +55,6 @@ export default function StudyDeck({ paperIds, papers, read }: Props) {
       const result = await api.cards();
       setCards(result.cards);
       setDueCount(result.due);
-      setCardPapers(result.papers);
     } catch {
       /* backend may not have any cards yet */
     }
@@ -57,9 +64,39 @@ export default function StudyDeck({ paperIds, papers, read }: Props) {
     refresh();
   }, [refresh]);
 
+  // Relationship cards cost nothing to generate (reused edge descriptions, no
+  // LLM call), so keep them fresh automatically rather than adding a button
+  // for it — same treatment as the free glossary-derived definition cards.
+  useEffect(() => {
+    if (!searchId) return;
+    api
+      .relationshipCards(searchId)
+      .then(() => refresh())
+      .catch(() => {});
+  }, [searchId, refresh]);
+
+  // Relationship cards are saved into their source paper's card file too, so
+  // checking cardPapers alone would mark a paper as "done" from a relationship
+  // card before it ever got its own definition/concept/result/critique cards.
   const missing = useMemo(
-    () => paperIds.filter((id) => !cardPapers.includes(id)),
-    [paperIds, cardPapers],
+    () =>
+      paperIds.filter(
+        (id) => !cards.some((c) => c.paper_id === id && c.kind !== "relationship"),
+      ),
+    [paperIds, cards],
+  );
+
+  const scopedPaperIds = useMemo(
+    () => (scope === ALL_SCOPE ? paperIds : clusters.find((c) => c.name === scope)?.paper_ids ?? []),
+    [scope, paperIds, clusters],
+  );
+
+  const inScope = useCallback(
+    (card: Flashcard) =>
+      scopedPaperIds.includes(card.paper_id) &&
+      (card.kind !== "relationship" ||
+        (card.related_paper_id != null && scopedPaperIds.includes(card.related_paper_id))),
+    [scopedPaperIds],
   );
 
   const generate = async () => {
@@ -83,12 +120,14 @@ export default function StudyDeck({ paperIds, papers, read }: Props) {
     setError(null);
     try {
       const result = await api.cards({ dueOnly });
-      const pool = result.cards.filter((c) => paperIds.includes(c.paper_id));
+      const pool = result.cards.filter(inScope);
       if (pool.length === 0) {
         setError(
           dueOnly
             ? "Nothing is due right now — come back later, or quiz the whole deck."
-            : "No cards yet. Generate some first.",
+            : scope === ALL_SCOPE
+              ? "No cards yet. Generate some first."
+              : "No cards for this cluster yet.",
         );
         return;
       }
@@ -139,7 +178,7 @@ export default function StudyDeck({ paperIds, papers, read }: Props) {
       return copy;
     });
 
-  const deckCards = cards.filter((c) => paperIds.includes(c.paper_id));
+  const deckCards = cards.filter(inScope);
   const deckDue = deckCards.filter(
     (c) => !c.due || new Date(c.due) <= new Date(),
   ).length;
@@ -151,6 +190,27 @@ export default function StudyDeck({ paperIds, papers, read }: Props) {
       {error ? (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800">
           {error}
+        </div>
+      ) : null}
+
+      {/* Scope: whole search, or one cluster — narrows which papers (and
+          which relationship cards) the deck and quiz draw from. */}
+      {clusters.length > 1 ? (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-xs text-stone-400">Quiz on:</span>
+          {[{ name: ALL_SCOPE, paper_ids: paperIds }, ...clusters].map((c) => (
+            <button
+              key={c.name}
+              onClick={() => setScope(c.name)}
+              className={
+                scope === c.name
+                  ? "rounded-full bg-stone-900 px-2.5 py-1 text-xs font-medium text-white"
+                  : "rounded-full border border-stone-200 bg-white px-2.5 py-1 text-xs text-stone-600 transition hover:border-stone-400"
+              }
+            >
+              {c.name === ALL_SCOPE ? "All papers" : c.name}
+            </button>
+          ))}
         </div>
       ) : null}
 
@@ -185,7 +245,7 @@ export default function StudyDeck({ paperIds, papers, read }: Props) {
               onClick={() =>
                 downloadFile(
                   "/api/cards/anki",
-                  { paper_ids: paperIds },
+                  { paper_ids: scopedPaperIds },
                   "research-copilot-cards.txt",
                 ).catch((e) => setError(String(e)))
               }

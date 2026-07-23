@@ -159,12 +159,24 @@ export interface DeepDive {
   created_at: string;
 }
 
+export interface DeepJobPartial {
+  source_url?: string;
+  total_words?: number;
+  sections?: SectionDigest[];
+  synthesis?: { deep_summary: string; contributions: string[]; results_detail: string };
+  explanations?: Explanations;
+  glossary?: GlossaryTerm[];
+  critique?: Critique;
+}
+
 export interface DeepJob {
   id: string;
   paper_id: string;
   status: "running" | "done" | "error";
   stages: StageState[];
   error?: string | null;
+  /** Filled in as each generation phase finishes, before the job is fully done. */
+  partial?: DeepJobPartial;
 }
 
 export interface ChatSource {
@@ -236,6 +248,8 @@ export interface Flashcard {
   question: string;
   answer: string;
   kind: string;
+  /** For kind="relationship": the other paper in the pair. */
+  related_paper_id?: string | null;
   due: string;
   interval: number;
   ease: number;
@@ -281,6 +295,37 @@ export interface Digest {
   highlights: DigestHighlight[];
 }
 
+// --- search history diffing ------------------------------------------------
+
+export interface PaperBrief {
+  id: string;
+  title: string;
+}
+
+export interface SearchDiffSide {
+  id: string;
+  query: string;
+  title: string;
+  created_at: string;
+  paper_count: number;
+}
+
+export interface SearchDiff {
+  a: SearchDiffSide;
+  b: SearchDiffSide;
+  shared_paper_count: number;
+  new_papers: PaperBrief[];
+  dropped_papers: PaperBrief[];
+  clusters_added: string[];
+  clusters_removed: string[];
+  consensus_added: string[];
+  consensus_removed: string[];
+  tensions_added: string[];
+  tensions_removed: string[];
+  open_problems_added: string[];
+  open_problems_removed: string[];
+}
+
 export interface StageState {
   key: string;
   label: string;
@@ -319,7 +364,15 @@ export interface Engine {
   speed: string;
 }
 
+export interface OpenRouterUsage {
+  used: number;
+  cap: number;
+  remaining: number;
+  near_cap: boolean;
+}
+
 export interface EnginesResponse {
   active: string;
   engines: Engine[];
+  openrouter_usage?: OpenRouterUsage;
 }

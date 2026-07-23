@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Callable
+from typing import Any, Callable
 
 from fulltext import FullText, trim_words
 from llm import parse_json
@@ -29,6 +29,7 @@ MAX_SECTIONS = 8
 SECTION_WORD_LIMIT = 1400
 
 Progress = Callable[[str], None]
+Partial = Callable[[str, Any], None]
 
 
 def _paper_header(paper: Paper) -> str:
@@ -85,7 +86,12 @@ async def run_deep_dive(
     full: FullText,
     on_progress: Progress,
     concurrency: int = 2,
+    on_partial: Partial | None = None,
 ) -> DeepDive:
+    def emit(key: str, value: Any) -> None:
+        if on_partial is not None:
+            on_partial(key, value)
+
     sections = _select_sections(full)
     total = len(sections)
 
@@ -108,6 +114,7 @@ async def run_deep_dive(
     await asyncio.gather(*(run(i, s) for i, s in enumerate(sections)))
     ordered = [d for d in digests if d is not None]
     brief = _digest_brief(ordered)
+    emit("sections", [d.model_dump() for d in ordered])
 
     # ---- reduce: synthesis --------------------------------------------------
     on_progress("Synthesizing the full paper…")
@@ -120,6 +127,7 @@ async def run_deep_dive(
         user=f"{_paper_header(paper)}\n\nAbstract:\n{paper.abstract}\n\nSection digests:\n\n{brief}",
         max_tokens=1600,
     )
+    emit("synthesis", synthesis.model_dump())
 
     # ---- reduce: teaching material -----------------------------------------
     on_progress("Writing three-level explanations…")
@@ -137,6 +145,7 @@ async def run_deep_dive(
         ),
         max_tokens=1600,
     )
+    emit("explanations", explanations.model_dump())
 
     on_progress("Building the jargon glossary…")
     glossary = await parse_json(
@@ -150,19 +159,18 @@ async def run_deep_dive(
         user=f"{_paper_header(paper)}\n\nAbstract:\n{paper.abstract}\n\nSection digests:\n\n{brief}",
         max_tokens=2000,
     )
+    emit("glossary", [t.model_dump() for t in glossary.terms])
 
     on_progress("Writing the critique card…")
     critique = await parse_json(
         CritiqueOut,
         system=(
-            "You are a rigorous but fair peer reviewer teaching a student how to read papers "
-            "critically. Prefer specific, checkable criticisms (missing baseline, single "
+            "You are a rigorous but fair peer reviewer. Write directly about the paper's "
+            "claims and evidence -- never mention 'the digest', 'the summary', or 'the "
+            "provided text'. Prefer specific, checkable criticisms (missing baseline, single "
             "dataset, cost not reported) over generic complaints, and cite the paper's own "
-            "numbers wherever you can.\n\n"
-            "You are given per-section digests of the paper. Treat them as the paper itself: "
-            "write about 'the paper', never about 'the digest', 'the summary', or 'the "
-            "provided text'. If something you would want is absent, say the paper does not "
-            "report it."
+            "numbers wherever you can. If something you would want is absent, say the paper "
+            "does not report it."
         ),
         user=(
             f"{_paper_header(paper)}\n\nSynthesis:\n{synthesis.deep_summary}\n\n"
@@ -170,6 +178,7 @@ async def run_deep_dive(
         ),
         max_tokens=1800,
     )
+    emit("critique", critique.model_dump())
 
     return DeepDive(
         paper_id=paper.id,

@@ -18,6 +18,7 @@ from pydantic import BaseModel  # noqa: E402
 
 import citations  # noqa: E402
 import llm  # noqa: E402
+import openrouter  # noqa: E402
 import store  # noqa: E402
 from arxiv_client import ArxivUnavailable, fetch_by_id, search_arxiv  # noqa: E402
 from chat import answer_question as chat_with_paper_impl  # noqa: E402
@@ -30,16 +31,19 @@ from learning import (  # noqa: E402
     generate_cards,
     grade_answer,
     is_due,
+    relationship_cards,
     schedule,
     to_anki_tsv,
 )
 from models import Digest, Flashcard, MatrixRow, Paper  # noqa: E402
 from synthesize import expand_queries  # noqa: E402
 from research import (  # noqa: E402
+    build_field_report,
     build_matrix_row,
     build_related_work,
     cite_key,
     compare_papers,
+    diff_searches,
     matrix_to_csv,
     to_bibtex,
 )
@@ -99,6 +103,9 @@ async def list_engines():
             # Only surface Claude if a key is actually configured.
             if spec["provider"] != "anthropic" or llm.has_api_key()
         ],
+        # The per-minute cap is enforced live and never surfaces to the user;
+        # the per-day cap has no such backpressure, so warn before it's hit.
+        "openrouter_usage": openrouter.daily_usage(),
     }
 
 
@@ -383,6 +390,52 @@ def get_search(search_id: str):
     return search
 
 
+@app.get("/api/search-diff")
+def search_diff(a: str, b: str):
+    """What changed between two of the reader's own past searches."""
+    search_a, search_b = store.load_search(a), store.load_search(b)
+    if search_a is None or search_b is None:
+        raise HTTPException(404, "One or both searches not found.")
+    return diff_searches(search_a, search_b, _papers_by_id())
+
+
+@app.post("/api/searches/{search_id}/report")
+def field_report(search_id: str):
+    """Overview + clusters + reading order + flashcard progress as one .md file."""
+    search = store.load_search(search_id)
+    if search is None:
+        raise HTTPException(404, "Search not found.")
+
+    paper_ids = set(search.get("paper_ids") or [])
+    raw_cards = [card for pid in paper_ids for card in store.load_cards(pid)]
+    cards = [Flashcard(**c) for c in raw_cards]
+    # A relationship card only counts for this search if both papers it
+    # connects are actually in it — matches the study deck's own scoping.
+    scoped = [
+        c
+        for c in cards
+        if c.kind != "relationship" or (c.related_paper_id in paper_ids)
+    ]
+    reviewed = [c for c in scoped if c.reps > 0]
+    scores = [c.last_score for c in reviewed if c.last_score is not None]
+    card_stats = {
+        "total": len(scoped),
+        "relationship": sum(1 for c in scoped if c.kind == "relationship"),
+        "per_paper": sum(1 for c in scoped if c.kind != "relationship"),
+        "reviewed": len(reviewed),
+        "due": sum(1 for c in scoped if is_due(c)),
+        "avg_score": (sum(scores) / len(scores)) if scores else None,
+    }
+
+    content = build_field_report(search, _papers_by_id(), card_stats)
+    filename = f"{search_id}-field-report.md"
+    return Response(
+        content=content,
+        media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 class ReadRequest(BaseModel):
     paper_id: str
     read: bool
@@ -410,6 +463,8 @@ async def _run_deep_dive(job, paper: Paper) -> None:
             )
         stage.detail = f"{full.total_words:,} words · {len(full.sections)} sections"
         stage.status = "done"
+        job.partial["source_url"] = full.source_url
+        job.partial["total_words"] = full.total_words
 
         stage = job.stage("sections")
         stage.status = "active"
@@ -428,8 +483,11 @@ async def _run_deep_dive(job, paper: Paper) -> None:
             job.stage(nxt).status = "active"
             job.stage(nxt).detail = detail
 
+        def on_partial(key: str, value) -> None:
+            job.partial[key] = value
+
         deep_task = asyncio.create_task(
-            run_deep_dive(paper, full, on_progress)
+            run_deep_dive(paper, full, on_progress, on_partial=on_partial)
         )
         # Flip stage highlighting as the deep dive announces each phase.
         while not deep_task.done():
@@ -509,6 +567,17 @@ def get_deep_dive(paper_id: str):
     if deep is None:
         raise HTTPException(404, "This paper has not been deep-read yet.")
     return deep
+
+
+@app.delete("/api/papers/{paper_id:path}")
+def remove_paper(paper_id: str):
+    """Undo an add or a mis-placed paper: drops it from the library, every
+    search it appears in, and every per-paper file (deep dive, chat index,
+    citation cache, matrix row, flashcards)."""
+    result = store.remove_paper(paper_id)
+    if not result["removed"]:
+        raise HTTPException(404, "Paper not found in your library.")
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -678,6 +747,57 @@ async def make_cards(paper_id: str, refresh: bool = False):
 
     store.save_cards(paper_id, payload)
     return {"cards": payload, "generated": True}
+
+
+def _save_relationship_cards(search_id: str, cards: list[Flashcard]) -> list[dict]:
+    """Relationship cards live in their source paper's card file, alongside its
+    own definition/concept/result/critique cards — merged in, never overwritten."""
+    by_paper: dict[str, list[Flashcard]] = {}
+    for card in cards:
+        by_paper.setdefault(card.paper_id, []).append(card)
+
+    saved: list[dict] = []
+    for paper_id, new_cards in by_paper.items():
+        existing = store.load_cards(paper_id)
+        previous = {c["id"]: c for c in existing}
+        # Keep everything except this search's own relationship cards, which
+        # are about to be replaced with a fresh (possibly changed) batch.
+        # The old id scheme ("rel:{search_id}:...") didn't carry the source
+        # paper id first, so grading couldn't find the card by id; matching it
+        # too here clears out any of those left behind by that bug.
+        prefix = f"{paper_id}:rel:{search_id}:"
+        old_prefix = f"rel:{search_id}:"
+        payload = [
+            c
+            for c in existing
+            if not c.get("id", "").startswith(prefix)
+            and not c.get("id", "").startswith(old_prefix)
+        ]
+        for card in new_cards:
+            old = previous.get(card.id)
+            if old and old.get("question") == card.question:
+                card.due = old.get("due", "")
+                card.interval = old.get("interval", 0)
+                card.ease = old.get("ease", 2.5)
+                card.reps = old.get("reps", 0)
+                card.lapses = old.get("lapses", 0)
+                card.last_score = old.get("last_score")
+            dumped = card.model_dump()
+            payload.append(dumped)
+            saved.append(dumped)
+        store.save_cards(paper_id, payload)
+    return saved
+
+
+@app.post("/api/searches/{search_id}/relationship-cards")
+def make_relationship_cards(search_id: str):
+    """Cross-paper cards from this search's relationship edges — instant, no LLM call."""
+    search = store.load_search(search_id)
+    if search is None:
+        raise HTTPException(404, "Search not found.")
+    cards = relationship_cards(search, _papers_by_id())
+    saved = _save_relationship_cards(search_id, cards)
+    return {"cards": saved, "generated": len(saved)}
 
 
 @app.get("/api/cards")

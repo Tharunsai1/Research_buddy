@@ -49,7 +49,10 @@ definition and how *this* paper uses the concept.
 The map has a **This search / All papers** toggle. *This search* — the default —
 shows only the papers the current search returned, grouped by that search's own
 method clusters. *All papers* is the accumulated library across every search.
-Click a node to open the paper; drag one to pin it where you drop it.
+Click a node to open the paper; drag one to pin it where you drop it. Scroll or
+pinch to zoom (toward the cursor), drag empty background to pan, and use the
++/−/reset controls in the corner — at 90+ papers in *All papers*, 1:1 is too
+dense to read without it.
 
 **Research toolkit** — three tools for when you're writing, not just reading:
 
@@ -67,16 +70,34 @@ Click a node to open the paper; drag one to pin it where you drop it.
 **Learning loop** — for actually retaining what you read:
 
 - **Study deck** — flashcards per paper. Definition cards come free from the
-  glossary; the model adds *concept*, *result*, and *critique* cards. Export to
-  **Anki** (tab-separated, tagged per paper).
+  glossary; the model adds *concept*, *result*, and *critique* cards.
+  *Relationship* cards test papers against each other — "how does X build on
+  Y?" — reusing the map's own edge descriptions, so they cost nothing to
+  generate and appear automatically. A **Quiz on** selector scopes the whole
+  deck (and the quiz pool) to one cluster instead of the full search, so you
+  can test whether you understand how a sub-theme's papers relate, not just
+  each one in isolation — a relationship card only counts as in-scope when
+  *both* papers it connects are in the selected cluster. Export to **Anki**
+  (tab-separated, tagged per paper).
 - **Quiz mode** — answer in your own words and the model grades against the
-  paper: verdict, 0–100 score, what you missed, and the reference answer.
-  Grades drive **spaced repetition** (SM-2 lite): correct → 1, 3, 8… days;
-  wrong → back to tomorrow. *Quiz me* shows only what's due.
+  paper (or, for a relationship card, against the edge description): verdict,
+  0–100 score, what you missed, and the reference answer. Grades drive
+  **spaced repetition** (SM-2 lite): correct → 1, 3, 8… days; wrong → back to
+  tomorrow. *Quiz me* shows only what's due.
 - **What's new in this field** — re-runs a saved search against arXiv, keeps
   only papers you don't have, and reports what changed, flagging anything that
   **challenges the consensus** you already mapped. New papers fold into the
   library so the map keeps growing.
+- **Compare past searches** — pick any two of your own past searches (the same
+  query re-run later, or two related ones) and see what actually changed:
+  papers added or dropped, themes gained or lost, consensus and tensions that
+  shifted, open problems that appeared or got resolved. Pure diff over data
+  you already have — no LLM call, so it's instant.
+- **Field report** — the *⤓ Field report* button next to the map bundles a
+  search's overview, method clusters (with links), tensions, consensus, open
+  problems, suggested reading order, and your flashcard progress into one
+  Markdown file — something to keep, paste into notes, or hand to someone
+  else. No LLM call; it's all data the search already produced.
 
 ## Stack
 
@@ -105,6 +126,11 @@ survives a restart. Work already written to disk is untouched.
 | **Qwen3 8B** | local (Ollama) | Offline and free, shallower · ~90s/paper |
 
 Claude appears as a third option only when `ANTHROPIC_API_KEY` is set.
+
+The picker tracks Nemotron's OpenRouter usage against the free tier's daily
+cap and shows a quiet count (e.g. "312/1000 requests used today"); past 90% it
+turns into an amber warning so a big search doesn't burn the rest of the day's
+budget without warning.
 
 ### 0. LLM
 
@@ -179,6 +205,7 @@ depends on your GPU (the pipeline makes ~11 LLM calls per search). With
 | `RC_CROSS_ENCODER` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | reranker model |
 | `RC_DISABLE_CE` | unset | set `1` to skip the cross-encoder (LLM-only ranking) |
 | `S2_API_KEY` | unset | optional Semantic Scholar key; raises the shared rate limit |
+| `RC_OPENROUTER_DAILY_CAP` | `1000` | free-tier daily request budget the model picker warns against; set to `50` if the account has never funded $10 |
 
 ## Architecture
 

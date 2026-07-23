@@ -387,6 +387,75 @@ def load_digests(search_id: str) -> list[dict[str, Any]]:
         return []
 
 
+def remove_paper(paper_id: str) -> dict[str, Any]:
+    """Undo: drop a paper from the library, every search, and every per-paper file.
+
+    Exists mainly for the "+ Add" prerequisite flow — a paper placed in the
+    wrong cluster (or the wrong search entirely) previously had no way back
+    out short of asking for a manual fix. Works for any paper, not just added
+    prerequisites.
+    """
+    with _lock:
+        was_in_library = paper_id in _collection["papers"]
+        _collection["papers"].pop(paper_id, None)
+        _collection["extractions"].pop(paper_id, None)
+        _collection["paper_search"].pop(paper_id, None)
+        _collection["read"] = [p for p in _collection["read"] if p != paper_id]
+
+        clusters = [
+            {**c, "paper_ids": [p for p in c["paper_ids"] if p != paper_id]}
+            for c in _collection["map"]["clusters"]
+        ]
+        _collection["map"]["clusters"] = [c for c in clusters if c["paper_ids"]]
+        _collection["map"]["bridge_edges"] = [
+            e
+            for e in _collection["map"]["bridge_edges"]
+            if paper_id not in (e["source"], e["target"])
+        ]
+
+        touched_searches: list[str] = []
+        if SEARCHES_DIR.exists():
+            for path in SEARCHES_DIR.glob("*.json"):
+                try:
+                    search = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                if paper_id not in search.get("paper_ids", []):
+                    continue
+                search["paper_ids"] = [p for p in search["paper_ids"] if p != paper_id]
+                search["clusters"] = [
+                    {**c, "paper_ids": [p for p in c["paper_ids"] if p != paper_id]}
+                    for c in search.get("clusters", [])
+                ]
+                search["clusters"] = [c for c in search["clusters"] if c["paper_ids"]]
+                search["edges"] = [
+                    e
+                    for e in search.get("edges", [])
+                    if paper_id not in (e["source"], e["target"])
+                ]
+                search["reading_order"] = [
+                    s for s in search.get("reading_order", []) if s["paper_id"] != paper_id
+                ]
+                tmp = path.with_suffix(".tmp")
+                tmp.write_text(json.dumps(search, indent=1), encoding="utf-8")
+                tmp.replace(path)
+                touched_searches.append(search["id"])
+                for meta in _collection["searches"]:
+                    if meta["id"] == search["id"]:
+                        meta["paper_count"] = len(search["paper_ids"])
+
+        _save_collection()
+
+    safe = _safe(paper_id)
+    if safe:
+        for directory in (DEEP_DIR, INDEX_DIR, S2_DIR, MATRIX_DIR, CARDS_DIR):
+            path = directory / f"{safe}.json"
+            if path.exists():
+                path.unlink()
+
+    return {"removed": was_in_library, "searches_updated": touched_searches}
+
+
 def all_search_edges() -> list[dict[str, Any]]:
     """Union of relationship edges across every saved search (for the global map)."""
     edges: list[dict[str, Any]] = []

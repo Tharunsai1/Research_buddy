@@ -36,6 +36,8 @@ interface Props {
   hasDeep: boolean;
   onToggleRead: (read: boolean) => void;
   onDeepDone: () => void;
+  /** Called after the paper is removed from the library — undo for a wrong add/placement. */
+  onRemoved: () => void;
   onClose: () => void;
 }
 
@@ -90,6 +92,7 @@ export default function PaperWorkspace({
   hasDeep,
   onToggleRead,
   onDeepDone,
+  onRemoved,
   onClose,
 }: Props) {
   const [tab, setTab] = useState<Tab>("summary");
@@ -97,6 +100,8 @@ export default function PaperWorkspace({
   const [deep, setDeep] = useState<DeepDive | null>(null);
   const [job, setJob] = useState<DeepJob | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [removing, setRemoving] = useState(false);
   const [question, setQuestion] = useState("");
   const [chatLog, setChatLog] = useState<
     { question: string; answer?: ChatAnswer; error?: string }[]
@@ -179,6 +184,19 @@ export default function PaperWorkspace({
     }
   }, [paper.id, pollJob]);
 
+  const doRemove = async () => {
+    setRemoving(true);
+    setError(null);
+    try {
+      await api.removePaper(paper.id);
+      onRemoved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setRemoving(false);
+      setConfirmRemove(false);
+    }
+  };
+
   const ask = async (event: React.FormEvent) => {
     event.preventDefault();
     const q = question.trim();
@@ -202,7 +220,45 @@ export default function PaperWorkspace({
   };
 
   const running = job?.status === "running";
-  const terms = deep?.glossary ?? [];
+
+  // Deep dive takes ~90s-4min; waiting for the whole thing to unlock any
+  // reading is the slow part, not the total time. Each generation phase
+  // (sections, synthesis, explanations, glossary, critique) lands
+  // independently on the job while it's still running — surface each as soon
+  // as it's ready instead of gating everything on full completion. `deep`
+  // (the saved, complete DeepDive) always wins once it exists.
+  const partial = job?.partial;
+  const sectionsReady = Boolean(deep) || Boolean(partial?.sections?.length);
+  const synthesisReady = Boolean(deep) || Boolean(partial?.synthesis);
+  const explainReady = Boolean(deep) || Boolean(partial?.explanations);
+  const critiqueReady = Boolean(deep) || Boolean(partial?.critique);
+
+  const view: DeepDive | null =
+    deep ??
+    (partial
+      ? {
+          paper_id: paper.id,
+          source_url: partial.source_url ?? "",
+          total_words: partial.total_words ?? 0,
+          deep_summary: partial.synthesis?.deep_summary ?? "",
+          contributions: partial.synthesis?.contributions ?? [],
+          results_detail: partial.synthesis?.results_detail ?? "",
+          sections: partial.sections ?? [],
+          explanations: partial.explanations ?? { undergrad: "", grad: "", expert: "" },
+          glossary: partial.glossary ?? [],
+          critique:
+            partial.critique ?? {
+              not_solved: "",
+              assumptions: [],
+              weaknesses: [],
+              reviewer_questions: [],
+            },
+          chunk_count: 0,
+          created_at: "",
+        }
+      : null);
+
+  const terms = view?.glossary ?? [];
 
   return (
     <div
@@ -273,6 +329,33 @@ export default function PaperWorkspace({
             >
               {isRead ? "✓ Read" : "Mark as read"}
             </button>
+            {confirmRemove ? (
+              <span className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-sm text-red-700">
+                Remove from library?
+                <button
+                  onClick={doRemove}
+                  disabled={removing}
+                  className="font-medium underline underline-offset-2 disabled:opacity-50"
+                >
+                  {removing ? "Removing…" : "Yes, remove"}
+                </button>
+                <button
+                  onClick={() => setConfirmRemove(false)}
+                  disabled={removing}
+                  className="text-red-400 hover:text-red-600 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+              </span>
+            ) : (
+              <button
+                onClick={() => setConfirmRemove(true)}
+                title="Remove this paper from your library — undoes a mistaken add or placement"
+                className="rounded-lg border border-transparent px-3 py-1.5 text-sm text-stone-400 transition hover:border-red-200 hover:bg-red-50 hover:text-red-600"
+              >
+                🗑 Remove
+              </button>
+            )}
             {!deep && !running ? (
               <button
                 onClick={startDeepDive}
@@ -292,13 +375,32 @@ export default function PaperWorkspace({
           {/* Tabs */}
           <div className="mt-4 flex flex-wrap gap-1">
             {TABS.map((entry) => {
-              const locked = entry.deepOnly && !deep;
+              const ready: Record<Tab, boolean> = {
+                summary: true,
+                explain: explainReady,
+                sections: sectionsReady,
+                critique: critiqueReady,
+                // Chat needs the passage index, built only after the full
+                // read finishes — no partial version of that is meaningful.
+                chat: Boolean(deep),
+              };
+              const locked = entry.deepOnly && !ready[entry.key];
+              // Ready early but the rest of the read is still in flight —
+              // this tab may still fill in further (e.g. sections done,
+              // critique not yet).
+              const stillFilling = running && !locked && entry.deepOnly && !deep;
               return (
                 <button
                   key={entry.key}
                   onClick={() => !locked && setTab(entry.key)}
                   disabled={locked}
-                  title={locked ? "Read the full paper to unlock" : undefined}
+                  title={
+                    locked
+                      ? "Read the full paper to unlock"
+                      : stillFilling
+                        ? "Ready early — the rest of the read is still in progress"
+                        : undefined
+                  }
                   className={
                     tab === entry.key
                       ? "rounded-lg bg-stone-900 px-3 py-1.5 text-sm font-medium text-white"
@@ -309,6 +411,9 @@ export default function PaperWorkspace({
                 >
                   {entry.label}
                   {locked ? " 🔒" : ""}
+                  {stillFilling ? (
+                    <span className="ml-1.5 inline-block h-1.5 w-1.5 animate-pulse-dot rounded-full bg-[#2a78d6] align-middle" />
+                  ) : null}
                 </button>
               );
             })}
@@ -387,15 +492,15 @@ export default function PaperWorkspace({
                 </>
               ) : null}
 
-              {deep ? (
+              {synthesisReady && view ? (
                 <>
                   <Card title="Full-paper synthesis">
-                    <RichText text={deep.deep_summary} terms={terms} />
+                    <RichText text={view.deep_summary} terms={terms} />
                   </Card>
                   <div className="rounded-xl border border-stone-200 bg-white p-4">
                     <p className="text-sm font-semibold text-stone-900">Contributions</p>
                     <ul className="mt-2 space-y-1.5">
-                      {deep.contributions.map((item, index) => (
+                      {view.contributions.map((item, index) => (
                         <li key={index} className="flex gap-2 text-sm leading-relaxed text-stone-600">
                           <span className="text-stone-300">▸</span>
                           <span>
@@ -406,7 +511,7 @@ export default function PaperWorkspace({
                     </ul>
                   </div>
                   <Card title="Results in detail">
-                    <RichText text={deep.results_detail} terms={terms} />
+                    <RichText text={view.results_detail} terms={terms} />
                   </Card>
                 </>
               ) : (
@@ -452,7 +557,7 @@ export default function PaperWorkspace({
           ) : null}
 
           {/* Explain tab */}
-          {tab === "explain" && deep ? (
+          {tab === "explain" && explainReady && view ? (
             <div className="space-y-4">
               <div className="flex flex-wrap gap-1.5">
                 {LEVELS.map((entry) => (
@@ -474,7 +579,7 @@ export default function PaperWorkspace({
               </p>
               <div className="rounded-xl border border-stone-200 bg-white p-5">
                 <p className="text-[15px] leading-relaxed text-stone-700">
-                  <RichText text={deep.explanations[level]} terms={terms} />
+                  <RichText text={view.explanations[level]} terms={terms} />
                 </p>
               </div>
 
@@ -508,20 +613,25 @@ export default function PaperWorkspace({
           ) : null}
 
           {/* Sections tab */}
-          {tab === "sections" && deep ? (
+          {tab === "sections" && sectionsReady && view ? (
             <div className="space-y-3">
               <p className="text-xs text-stone-400">
-                Section-by-section reading of the full text ·{" "}
-                <a
-                  href={deep.source_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="underline underline-offset-2 hover:text-stone-600"
-                >
-                  source
-                </a>
+                Section-by-section reading of the full text
+                {view.source_url ? (
+                  <>
+                    {" · "}
+                    <a
+                      href={view.source_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="underline underline-offset-2 hover:text-stone-600"
+                    >
+                      source
+                    </a>
+                  </>
+                ) : null}
               </p>
-              {deep.sections.map((section, index) => (
+              {view.sections.map((section, index) => (
                 <div key={index} className="rounded-xl border border-stone-200 bg-white p-4">
                   <div className="flex items-baseline justify-between gap-3">
                     <p className="text-sm font-semibold text-stone-900">{section.title}</p>
@@ -548,19 +658,19 @@ export default function PaperWorkspace({
           ) : null}
 
           {/* Critique tab */}
-          {tab === "critique" && deep ? (
+          {tab === "critique" && critiqueReady && view ? (
             <div className="space-y-3">
               <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-4">
                 <p className="text-sm font-semibold text-amber-900">What this paper does not solve</p>
                 <p className="mt-1.5 text-sm leading-relaxed text-amber-800">
-                  <RichText text={deep.critique.not_solved} terms={terms} />
+                  <RichText text={view.critique.not_solved} terms={terms} />
                 </p>
               </div>
               <div className="grid gap-3 md:grid-cols-2">
                 <div className="rounded-xl border border-stone-200 bg-white p-4">
                   <p className="text-sm font-semibold text-stone-900">Load-bearing assumptions</p>
                   <ul className="mt-2 space-y-1.5">
-                    {deep.critique.assumptions.map((item, index) => (
+                    {view.critique.assumptions.map((item, index) => (
                       <li key={index} className="flex gap-2 text-sm leading-relaxed text-stone-600">
                         <span className="text-stone-300">▸</span>
                         <span>
@@ -573,7 +683,7 @@ export default function PaperWorkspace({
                 <div className="rounded-xl border border-stone-200 bg-white p-4">
                   <p className="text-sm font-semibold text-stone-900">Methodological weaknesses</p>
                   <ul className="mt-2 space-y-1.5">
-                    {deep.critique.weaknesses.map((item, index) => (
+                    {view.critique.weaknesses.map((item, index) => (
                       <li key={index} className="flex gap-2 text-sm leading-relaxed text-stone-600">
                         <span className="text-stone-300">▸</span>
                         <span>
@@ -589,7 +699,7 @@ export default function PaperWorkspace({
                   Questions a reviewer would ask
                 </p>
                 <ol className="mt-2 space-y-2">
-                  {deep.critique.reviewer_questions.map((item, index) => (
+                  {view.critique.reviewer_questions.map((item, index) => (
                     <li key={index} className="flex gap-3 text-sm leading-relaxed text-stone-600">
                       <span className="font-mono text-xs font-semibold text-stone-300">
                         Q{index + 1}
