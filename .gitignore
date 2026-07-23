@@ -1,0 +1,24 @@
+# Claude Code project config — machine-local, not part of the app
+.claude/
+CLAUDE.md
+
+# Claude Code tooling artifacts (graphify knowledge graph)
+graphify-out/
+
+# Python
+backend/.venv/
+**/__pycache__/
+*.pyc
+
+# Secrets — never commit real keys
+backend/.env
+
+# Runtime data (your personal paper library, searches, deep dives, etc.)
+backend/data/
+
+# Leftover scratch output from ad-hoc model-comparison testing
+backend/qwen3_baseline/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
