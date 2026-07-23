@@ -457,9 +457,15 @@ async def _run_deep_dive(job, paper: Paper) -> None:
         stage.detail = "Fetching full text from arXiv…"
         full = await asyncio.to_thread(load_fulltext, paper.id)
         if full is None:
+            # Deliberately refuse rather than read whatever arXiv served. For a
+            # paper with no HTML rendering arXiv returns the /abs/ landing page,
+            # and summarising that produces a confident-looking deep dive built
+            # from an abstract — worse than no deep dive at all.
             raise RuntimeError(
-                "No HTML full text is available for this paper on arXiv "
-                "(older papers are PDF-only). Abstract-level summary is still available."
+                "arXiv has no HTML full text for this paper, only the abstract page "
+                "(papers before ~2023 are often PDF-only), so there is nothing to read "
+                "in depth. The summary, extraction and flashcards built from the "
+                "abstract still work — open the PDF for the full paper."
             )
         stage.detail = f"{full.total_words:,} words · {len(full.sections)} sections"
         stage.status = "done"

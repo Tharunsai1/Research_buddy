@@ -45,6 +45,16 @@ class S2Error(RuntimeError):
     pass
 
 
+# S2's batch endpoint returns a per-id `null` for an unknown paper — but only
+# when the batch also contains at least one paper it does recognize. A batch
+# where *every* id is unknown gets this 400 instead of a list of nulls
+# (confirmed directly: {"ARXIV:1706.03762","ARXIV:2403.02240"} -> 200 with
+# [paper, null]; {"ARXIV:2403.02240"} alone -> this 400). It is the same fact
+# — S2 doesn't have this paper — in a different shape depending on what else
+# happened to share the batch, not a real client error.
+_ALL_UNKNOWN = "no valid paper ids given"
+
+
 async def _post(ids: list[str]) -> list[dict | None]:
     """One rate-limited batch call, retrying through 429/5xx."""
     global _last_call
@@ -75,6 +85,8 @@ async def _post(ids: list[str]) -> list[dict | None]:
             continue
         if response.status_code == 200:
             return response.json()
+        if response.status_code == 400 and _ALL_UNKNOWN in response.text.lower():
+            return [None] * len(ids)
         if response.status_code in (429, 500, 502, 503, 504):
             await asyncio.sleep(2 ** attempt * 2)
             continue

@@ -53,6 +53,45 @@ def test_old_style_ids_survive_a_save_load_roundtrip(isolated_store):
     assert isolated_store.deep_dive_ids() == ["quant-ph/9903061"]
 
 
+def test_deep_dives_built_from_the_landing_page_are_withheld(isolated_store):
+    """Records written before fulltext.py rejected the /abs/ page summarised
+    an abstract as if it were the paper. They read as confidently as any other
+    record, so they must not be served — reopening offers a fresh read, which
+    now refuses with an explanation."""
+    isolated_store.save_deep_dive(
+        "quant-ph/9903061",
+        {"source_url": "https://arxiv.org/abs/quant-ph/9903061", "total_words": 509},
+    )
+    assert isolated_store.load_deep_dive("quant-ph/9903061") is None
+
+
+def test_a_withheld_record_is_not_deleted(isolated_store):
+    """Withholding is not destruction — the file stays for inspection."""
+    isolated_store.save_deep_dive(
+        "2307.15883", {"source_url": "https://arxiv.org/abs/2307.15883"}
+    )
+    assert (isolated_store.DEEP_DIR / "2307.15883.json").exists()
+
+
+@pytest.mark.parametrize(
+    "source_url",
+    [
+        "https://arxiv.org/html/2401.15884",
+        "https://arxiv.org/html/1706.03762v1",
+        "https://ar5iv.labs.arxiv.org/html/quant-ph/9903061",
+    ],
+)
+def test_real_deep_dives_are_served_normally(isolated_store, source_url):
+    isolated_store.save_deep_dive("x.1", {"source_url": source_url, "total_words": 6000})
+    assert isolated_store.load_deep_dive("x.1") is not None
+
+
+def test_a_record_without_a_source_url_is_still_served(isolated_store):
+    """Absent metadata is not evidence of the bug; don't withhold on a guess."""
+    isolated_store.save_deep_dive("x.2", {"deep_summary": "..."})
+    assert isolated_store.load_deep_dive("x.2") is not None
+
+
 def test_cards_roundtrip_for_old_style_ids(isolated_store):
     isolated_store.save_cards("quant-ph/9903061", [{"id": "quant-ph/9903061:gen:0"}])
     assert isolated_store.card_paper_ids() == ["quant-ph/9903061"]

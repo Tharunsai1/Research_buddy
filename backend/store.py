@@ -188,6 +188,20 @@ def save_deep_dive(paper_id: str, deep: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def _built_from_landing_page(deep: dict[str, Any]) -> bool:
+    """True for records written before fulltext.py learned to reject the
+    arXiv /abs/ page.
+
+    Those reads summarised the landing page — abstract and metadata — as if it
+    were the paper, so their `source_url` points at /abs/ rather than a
+    rendering. Nothing downstream can tell such a record from a real one, and
+    it reads as confidently as any other, so it is withheld rather than served.
+    The file is left on disk; reopening the paper simply offers a fresh read,
+    which now refuses with an explanation instead of inventing one.
+    """
+    return "/abs/" in (deep.get("source_url") or "")
+
+
 def load_deep_dive(paper_id: str) -> dict[str, Any] | None:
     if not _safe(paper_id):
         return None
@@ -195,9 +209,10 @@ def load_deep_dive(paper_id: str) -> dict[str, Any] | None:
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        deep = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
+    return None if _built_from_landing_page(deep) else deep
 
 
 def deep_dive_ids() -> list[str]:

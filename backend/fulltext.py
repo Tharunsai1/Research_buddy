@@ -16,6 +16,10 @@ from bs4 import BeautifulSoup, Tag
 
 _HEADERS = {"User-Agent": "research-copilot/0.1 (local research tool)"}
 
+# Minimum body length for a single-blob document to count as a paper — see the
+# fallback branch in `parse_html`.
+MIN_FALLBACK_WORDS = 1200
+
 # Sections that add tokens without adding understanding.
 _SKIP_HEADING = re.compile(
     r"^\s*(references|bibliography|acknowledg(e)?ments?|appendix\b.*|"
@@ -60,6 +64,24 @@ def _candidate_urls(arxiv_id: str) -> list[str]:
     ]
 
 
+# When a paper has no HTML rendering, arXiv answers /html/{id} with a 200 that
+# redirects to the /abs/ landing page. That page is ~40k characters of
+# metadata and navigation, so a size threshold cannot tell it apart from a
+# real paper — quant-ph/9903061 and 2307.15883 both sailed through and parsed
+# into a plausible-looking 500-700 word "Full text" section, which the deep
+# dive then read as if it were the paper.
+_ABS_PAGE = re.compile(r"://arxiv\.org/abs/", re.I)
+
+
+def _is_rendered_paper(html: str, url: str) -> bool:
+    """True only for an actual LaTeXML rendering, not a landing page.
+
+    Both arxiv.org/html and ar5iv emit LaTeXML, whose document class is the
+    reliable positive signal; the landing page never carries it.
+    """
+    return "ltx_document" in html and not _ABS_PAGE.search(url)
+
+
 def fetch_html(arxiv_id: str) -> tuple[str, str] | None:
     """Return (html, source_url) for the first source that serves this paper."""
     for url in _candidate_urls(arxiv_id):
@@ -72,8 +94,7 @@ def fetch_html(arxiv_id: str) -> tuple[str, str] | None:
         if response.status_code != 200:
             continue
         text = response.text
-        # arXiv returns a small "no HTML available" stub for PDF-only papers.
-        if len(text) < 20_000 and "ltx_document" not in text:
+        if not _is_rendered_paper(text, str(response.url)):
             continue
         return text, str(response.url)
     return None
@@ -145,9 +166,12 @@ def parse_html(paper_id: str, html: str, source_url: str) -> FullText:
         sections.append(Section(title=title, text=text))
 
     # Fallback for documents that don't use <section> (older ar5iv output).
+    # The floor is deliberately high: a whole paper's body runs to thousands
+    # of words, and the arXiv landing pages that used to reach this branch
+    # carried only 509 and 663, so the original 200-word floor accepted them.
     if not sections:
         body = _text_of(root)
-        if len(body.split()) >= 200:
+        if len(body.split()) >= MIN_FALLBACK_WORDS:
             sections = [Section(title="Full text", text=body)]
 
     return FullText(

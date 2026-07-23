@@ -261,7 +261,12 @@ frontend/
 A deep read makes ~11 LLM calls and takes roughly 90 seconds per paper on
 `qwen3:8b`; results are cached to disk, so reopening a paper is instant. Papers
 that are PDF-only on arXiv (mostly pre-2023) have no HTML full text — the tool
-says so and keeps the abstract-level summary.
+says so and keeps the abstract-level summary. It refuses rather than reading
+whatever arXiv served: for those papers `arxiv.org/html/{id}` answers 200 and
+redirects to the `/abs/` landing page, which is large enough to pass any
+size check, so the deep dive keys off LaTeXML markup and the redirect target
+instead. Reading that page instead of the paper produces a confident-looking
+deep dive built from an abstract, which is worse than no deep dive at all.
 
 Every search merges its papers into a persistent collection so the reading map
 grows coherently over time. Up to `RC_FULL_RECLUSTER_MAX` papers (default 40)
