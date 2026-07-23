@@ -1,12 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api } from "@/lib/api";
+import { api, downloadFile } from "@/lib/api";
 import type { AppState, Health, Job, SearchDetail } from "@/lib/types";
 import PipelineCard from "@/components/PipelineCard";
 import PaperList from "@/components/PaperList";
 import PaperWorkspace from "@/components/PaperWorkspace";
 import FieldDigest from "@/components/FieldDigest";
+import SearchDiffView from "@/components/SearchDiffView";
 import ModelPicker from "@/components/ModelPicker";
 import Prerequisites from "@/components/Prerequisites";
 import ReadingMap from "@/components/ReadingMap";
@@ -45,7 +46,9 @@ export default function Home() {
   const [mapView, setMapView] = useState<"map" | "timeline">("map");
   const [scope, setScope] = useState<"search" | "all">("search");
   const [enriching, setEnriching] = useState(false);
+  const [exportingReport, setExportingReport] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const prefetchedRef = useRef<Set<string>>(new Set());
 
   const refresh = useCallback(async (searchId?: string | null) => {
     const state = await api.state();
@@ -157,6 +160,47 @@ export default function Home() {
       count: search.paper_ids.length,
     };
   }, [app, search, scope]);
+
+  // Deep dive is the slow part (~90s-4min). Once the paper the reader is on
+  // finishes its own deep read, quietly start the next paper in that search's
+  // reading order in the background, so it's already done by the time they
+  // click it. Best-effort: errors are swallowed and a paper is only ever
+  // queued once per session.
+  const prefetchNextInOrder = useCallback(
+    (afterPaperId: string) => {
+      if (!search || !app) return;
+      const order = search.reading_order;
+      const index = order.findIndex((step) => step.paper_id === afterPaperId);
+      if (index === -1 || index + 1 >= order.length) return;
+      const nextId = order[index + 1].paper_id;
+      if (
+        prefetchedRef.current.has(nextId) ||
+        (app.deep_read ?? []).includes(nextId) ||
+        !app.papers[nextId]
+      ) {
+        return;
+      }
+      prefetchedRef.current.add(nextId);
+      api
+        .runningDeepJob(nextId)
+        .then((running) => {
+          if ("id" in running && running.status === "running") return; // already in flight
+          return api.startDeepDive(nextId);
+        })
+        .catch(() => {
+          prefetchedRef.current.delete(nextId); // let a later trigger retry
+        });
+    },
+    [search, app],
+  );
+
+  // Covers re-opening a paper that was already deep-read in an earlier
+  // session — onDeepDone won't fire again, so this is the only trigger.
+  useEffect(() => {
+    if (selected && (app?.deep_read ?? []).includes(selected)) {
+      prefetchNextInOrder(selected);
+    }
+  }, [selected, app?.deep_read, prefetchNextInOrder]);
 
   const enrich = async () => {
     setEnriching(true);
@@ -329,6 +373,28 @@ export default function Home() {
                     {enriching ? "Fetching citations…" : "↻ Load citation data"}
                   </button>
                 ) : null}
+                <button
+                  onClick={async () => {
+                    setExportingReport(true);
+                    setSubmitError(null);
+                    try {
+                      await downloadFile(
+                        `/api/searches/${search.id}/report`,
+                        {},
+                        `${search.id}-field-report.md`,
+                      );
+                    } catch (e) {
+                      setSubmitError(e instanceof Error ? e.message : String(e));
+                    } finally {
+                      setExportingReport(false);
+                    }
+                  }}
+                  disabled={exportingReport}
+                  title="Overview, clusters, reading order and flashcard progress as one Markdown file"
+                  className="rounded-lg border border-stone-200 bg-white px-3 py-1.5 text-xs font-medium text-stone-700 transition hover:border-stone-400 disabled:opacity-50"
+                >
+                  {exportingReport ? "Exporting…" : "⤓ Field report"}
+                </button>
                 <div className="flex rounded-lg border border-stone-200 bg-white p-0.5">
                   {(["map", "timeline"] as const).map((view) => (
                     <button
@@ -488,11 +554,20 @@ export default function Home() {
             />
           </section>
 
+          {app.searches.length > 1 ? (
+            <section className="space-y-3">
+              <SectionTitle icon="⇄">Compare past searches</SectionTitle>
+              <SearchDiffView searches={app.searches} onSelectPaper={setSelected} />
+            </section>
+          ) : null}
+
           <section className="space-y-3">
             <SectionTitle icon="✎">Study deck</SectionTitle>
             <StudyDeck
               key={`deck-${search.id}`}
+              searchId={search.id}
               paperIds={search.paper_ids}
+              clusters={search.clusters}
               papers={app.papers}
               read={app.read}
             />
@@ -530,7 +605,17 @@ export default function Home() {
           hasDeep={(app.deep_read ?? []).includes(selected)}
           onToggleRead={(read) => toggleRead(selected, read)}
           onDeepDone={() => {
-            api.state().then(setApp).catch(() => {});
+            api
+              .state()
+              .then(setApp)
+              .then(() => prefetchNextInOrder(selected))
+              .catch(() => {});
+          }}
+          onRemoved={() => {
+            setSelected(null);
+            // Removal can change the current search's paper list, clusters,
+            // edges and reading order, not just the library.
+            refresh(search?.id).catch(() => {});
           }}
           onClose={() => setSelected(null)}
         />

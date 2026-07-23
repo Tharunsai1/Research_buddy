@@ -18,6 +18,12 @@ import type { CitationMetrics, Edge, MapCluster, Paper } from "@/lib/types";
 const W = 920;
 const H = 520;
 const PAD = 26;
+const MIN_SCALE = 0.4;
+const MAX_SCALE = 5;
+
+function clampScale(scale: number): number {
+  return Math.max(MIN_SCALE, Math.min(MAX_SCALE, scale));
+}
 
 interface MapNode extends SimulationNodeDatum {
   id: string;
@@ -69,6 +75,20 @@ export default function ReadingMap({
   const dragRef = useRef<{ node: MapNode; moved: boolean } | null>(null);
   // A drag ends with a click event on the node; swallow that one.
   const suppressClickRef = useRef(false);
+
+  // Pan/zoom of the whole map, applied as a transform on the content group.
+  // At 90+ papers the default 1:1 view is too dense to read; this is what
+  // makes "All papers" usable instead of just a colorful blur.
+  const [view, setView] = useState({ x: 0, y: 0, scale: 1 });
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const panRef = useRef<{
+    startClientX: number;
+    startClientY: number;
+    startX: number;
+    startY: number;
+  } | null>(null);
+  const [panning, setPanning] = useState(false);
 
   const { nodes, links } = useMemo(() => {
     const clusterOf = new Map<string, number>();
@@ -146,7 +166,7 @@ export default function ReadingMap({
     };
   }, [nodes, links, clusters.length]);
 
-  const toViewBox = (event: React.PointerEvent) => {
+  const toViewBox = (event: { clientX: number; clientY: number }) => {
     const rect = svgRef.current?.getBoundingClientRect();
     if (!rect) return { x: 0, y: 0 };
     return {
@@ -155,20 +175,50 @@ export default function ReadingMap({
     };
   };
 
+  // Undo the pan/zoom transform to get the node-space coordinate a screen
+  // point corresponds to — needed so drag-to-pin still tracks the cursor
+  // correctly while zoomed in or panned.
+  const toWorld = (event: { clientX: number; clientY: number }) => {
+    const vb = toViewBox(event);
+    const { x, y, scale } = viewRef.current;
+    return { x: (vb.x - x) / scale, y: (vb.y - y) / scale };
+  };
+
   // Dragging pins a node where it is dropped, so the reader can untangle a
   // crowded corner and have it stay put.
   const startDrag = (event: React.PointerEvent, node: MapNode) => {
     event.preventDefault();
+    event.stopPropagation(); // don't also start a background pan
     dragRef.current = { node, moved: false };
     node.fx = node.x;
     node.fy = node.y;
     simRef.current?.alphaTarget(0.15).restart();
   };
 
+  const startPan = (event: React.PointerEvent) => {
+    if (event.target !== event.currentTarget) return; // only empty background
+    panRef.current = {
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startX: view.x,
+      startY: view.y,
+    };
+    setPanning(true);
+  };
+
   const handlePointerMove = (event: React.PointerEvent) => {
+    const pan = panRef.current;
+    if (pan) {
+      const rect = svgRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const dx = ((event.clientX - pan.startClientX) / rect.width) * W;
+      const dy = ((event.clientY - pan.startClientY) / rect.height) * H;
+      setView((v) => ({ ...v, x: pan.startX + dx, y: pan.startY + dy }));
+      return;
+    }
     const drag = dragRef.current;
     if (!drag) return;
-    const { x, y } = toViewBox(event);
+    const { x, y } = toWorld(event);
     if (Math.hypot(x - (drag.node.fx ?? x), y - (drag.node.fy ?? y)) > 2) {
       drag.moved = true;
     }
@@ -177,6 +227,8 @@ export default function ReadingMap({
   };
 
   const endDrag = () => {
+    panRef.current = null;
+    setPanning(false);
     const drag = dragRef.current;
     if (!drag) return;
     suppressClickRef.current = drag.moved;
@@ -197,6 +249,42 @@ export default function ReadingMap({
     onSelect(node.id);
   };
 
+  // Wheel needs a non-passive native listener — React's synthetic onWheel is
+  // passive by default, so preventDefault() there won't stop the page behind
+  // the map from also scrolling while the reader is trying to zoom it.
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const rect = svg.getBoundingClientRect();
+      const vbX = ((event.clientX - rect.left) / rect.width) * W;
+      const vbY = ((event.clientY - rect.top) / rect.height) * H;
+      setView((v) => {
+        const factor = Math.exp(-event.deltaY * 0.001);
+        const scale = clampScale(v.scale * factor);
+        const worldX = (vbX - v.x) / v.scale;
+        const worldY = (vbY - v.y) / v.scale;
+        return { scale, x: vbX - worldX * scale, y: vbY - worldY * scale };
+      });
+    };
+    svg.addEventListener("wheel", onWheel, { passive: false });
+    return () => svg.removeEventListener("wheel", onWheel);
+  }, []);
+
+  const zoomBy = (factor: number) => {
+    setView((v) => {
+      const scale = clampScale(v.scale * factor);
+      // Zoom toward the current view's center so button zoom feels anchored,
+      // not like it yanks the map toward a corner.
+      const worldCx = (W / 2 - v.x) / v.scale;
+      const worldCy = (H / 2 - v.y) / v.scale;
+      return { scale, x: W / 2 - worldCx * scale, y: H / 2 - worldCy * scale };
+    });
+  };
+
+  const resetView = () => setView({ x: 0, y: 0, scale: 1 });
+
   const nodeColor = (node: MapNode) =>
     node.cluster < 0 ? UNCLUSTERED_DARK : clusterColor(node.cluster, "dark");
 
@@ -208,21 +296,55 @@ export default function ReadingMap({
       <div className="pointer-events-none absolute left-4 top-3 z-10 rounded-md bg-white/5 px-3 py-1.5 backdrop-blur-sm">
         <p className="text-xs font-medium text-stone-200">Reading map</p>
         <p className="text-[11px] text-stone-400">
-          {nodes.length} papers · click to open · drag to rearrange
+          {nodes.length} papers · click to open · drag a paper to rearrange · scroll or
+          pinch to zoom · drag the background to pan
         </p>
+      </div>
+
+      <div className="absolute right-3 top-3 z-10 flex flex-col gap-1">
+        <button
+          type="button"
+          onClick={() => zoomBy(1.4)}
+          aria-label="Zoom in"
+          className="flex h-7 w-7 items-center justify-center rounded-md border border-white/10 bg-white/5 text-sm text-stone-200 backdrop-blur-sm transition hover:bg-white/15"
+        >
+          +
+        </button>
+        <button
+          type="button"
+          onClick={() => zoomBy(1 / 1.4)}
+          aria-label="Zoom out"
+          className="flex h-7 w-7 items-center justify-center rounded-md border border-white/10 bg-white/5 text-sm text-stone-200 backdrop-blur-sm transition hover:bg-white/15"
+        >
+          −
+        </button>
+        {view.scale !== 1 || view.x !== 0 || view.y !== 0 ? (
+          <button
+            type="button"
+            onClick={resetView}
+            aria-label="Reset zoom and pan"
+            title="Reset view"
+            className="flex h-7 w-7 items-center justify-center rounded-md border border-white/10 bg-white/5 text-[11px] text-stone-200 backdrop-blur-sm transition hover:bg-white/15"
+          >
+            ⟲
+          </button>
+        ) : null}
       </div>
 
       <svg
         ref={svgRef}
         viewBox={`0 0 ${W} ${H}`}
-        className="block h-[420px] w-full sm:h-[480px]"
+        className={`block h-[420px] w-full sm:h-[480px] ${panning ? "cursor-grabbing" : "cursor-grab"}`}
+        onPointerDown={startPan}
         onPointerMove={handlePointerMove}
         onPointerUp={endDrag}
         onPointerLeave={handlePointerLeave}
         role="img"
         aria-label="Force-directed reading map of collected papers, colored by cluster"
       >
-        {(links as (MapLink & { source: MapNode; target: MapNode })[]).map(
+        <g transform={`translate(${view.x},${view.y}) scale(${view.scale})`}>
+        {[
+        ...(links as (MapLink & { source: MapNode; target: MapNode })[]).map(
           (link, index) => {
             const active =
               hoveredId != null &&
@@ -247,8 +369,8 @@ export default function ReadingMap({
               />
             );
           },
-        )}
-        {nodes.map((node) => (
+        ),
+        ...nodes.map((node) => (
           <g
             key={node.id}
             transform={`translate(${node.x ?? 0},${node.y ?? 0})`}
@@ -287,15 +409,17 @@ export default function ReadingMap({
               </text>
             ) : null}
           </g>
-        ))}
+        )),
+        ]}
+        </g>
       </svg>
 
       {hovered ? (
         <div
           className="pointer-events-none absolute z-20 max-w-xs -translate-x-1/2 rounded-lg border border-stone-700 bg-stone-900/95 px-3 py-2 shadow-lg"
           style={{
-            left: `${((hovered.x ?? 0) / W) * 100}%`,
-            top: `calc(${((hovered.y ?? 0) / H) * 100}% - 8px)`,
+            left: `${(((hovered.x ?? 0) * view.scale + view.x) / W) * 100}%`,
+            top: `calc(${(((hovered.y ?? 0) * view.scale + view.y) / H) * 100}% - 8px)`,
             transform: "translate(-50%, -100%)",
           }}
         >

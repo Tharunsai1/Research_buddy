@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -459,7 +459,11 @@ class Flashcard(BaseModel):
     paper_id: str
     question: str
     answer: str
-    kind: str                      # definition | concept | result | critique
+    kind: str                      # definition | concept | result | critique | relationship
+    # For kind="relationship": the other paper in the pair, so a cluster-scoped
+    # quiz can require BOTH ends of the relationship to be in scope, not just
+    # the source paper.
+    related_paper_id: Optional[str] = None
     # Spaced-repetition state (SM-2 lite)
     due: str = ""                  # ISO date; "" means never reviewed
     interval: int = 0              # days until next review
@@ -571,6 +575,11 @@ class DeepJob(BaseModel):
     )
     error: Optional[str] = None
     created_at: float = Field(default_factory=time.time)
+    # Filled in as each generation phase finishes (sections, synthesis,
+    # explanations, glossary, critique), so the reader can start reading the
+    # summary while the critique is still being written instead of staring at
+    # a progress bar for the full ~90s-4min. Keys mirror DeepDive's fields.
+    partial: dict[str, Any] = Field(default_factory=dict)
 
     def stage(self, key: str) -> StageState:
         return next(s for s in self.stages if s.key == key)

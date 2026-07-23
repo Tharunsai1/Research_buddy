@@ -24,6 +24,7 @@ import os
 import re
 import time
 from collections import deque
+from pathlib import Path
 from typing import Any, Type, TypeVar
 
 import httpx
@@ -75,6 +76,62 @@ class _SlidingWindow:
 
 _limiter = _SlidingWindow(RPM)
 _client: httpx.AsyncClient | None = None
+
+
+# ---------------------------------------------------------------------------
+# Daily usage tracking
+# ---------------------------------------------------------------------------
+#
+# The free tier's per-minute cap is enforced live by `_limiter` above, but a
+# 50 or 1000/day cap has no such graceful backpressure — you just get 429s
+# for the rest of the day. Tracking usage ourselves lets the UI warn before a
+# big search burns the day's budget, rather than the reader finding out mid-run.
+
+# Default assumes the account has funded the one-time $10 that permanently
+# raises the cap from 50/day to 1000/day (see module docstring); override if not.
+DAILY_CAP = int(os.getenv("RC_OPENROUTER_DAILY_CAP", "1000"))
+_USAGE_FILE = Path(__file__).parent / "data" / "openrouter_usage.json"
+_usage_lock = asyncio.Lock()
+
+
+def _today() -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime())
+
+
+def _load_usage() -> dict[str, Any]:
+    try:
+        data = json.loads(_USAGE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+    if data.get("date") != _today():
+        return {"date": _today(), "count": 0}
+    return data
+
+
+def _save_usage(data: dict[str, Any]) -> None:
+    _USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _USAGE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data), encoding="utf-8")
+    tmp.replace(_USAGE_FILE)
+
+
+async def _record_call() -> None:
+    """One unit per real HTTP attempt — a retried call still spends quota."""
+    async with _usage_lock:
+        data = _load_usage()
+        data["count"] = data.get("count", 0) + 1
+        _save_usage(data)
+
+
+def daily_usage() -> dict[str, Any]:
+    """Today's call count against the free-tier daily cap (UTC day boundary)."""
+    used = _load_usage().get("count", 0)
+    return {
+        "used": used,
+        "cap": DAILY_CAP,
+        "remaining": max(DAILY_CAP - used, 0),
+        "near_cap": used >= DAILY_CAP * 0.9,
+    }
 
 
 def _http() -> httpx.AsyncClient:
@@ -203,6 +260,35 @@ def repair_control_chars(text: str) -> str:
     return "".join(out)
 
 
+# Reasoning-tuned models sometimes leak their opening chain-of-thought
+# ("The user wants me to write a peer review..." / "I need to act as...") into
+# the first string field of an otherwise well-formed structured response,
+# instead of answering it. This is valid JSON that passes schema validation,
+# so it has to be caught separately from JSON/schema errors.
+_LEAKED_INSTRUCTION = re.compile(
+    r"^\s*(the user (wants|is asking|requested|needs)|i need to\b|i should\b|"
+    r"i will\b|i'll\b|let me\b|okay,? (i|so)\b|as an ai\b)",
+    re.IGNORECASE,
+)
+
+
+def _leaked_instruction(value: Any) -> str | None:
+    """Recursively scan a validated model's fields for echoed system-prompt text."""
+    if isinstance(value, str):
+        return value[:80] if _LEAKED_INSTRUCTION.match(value) else None
+    if isinstance(value, dict):
+        for item in value.values():
+            found = _leaked_instruction(item)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = _leaked_instruction(item)
+            if found:
+                return found
+    return None
+
+
 def extract_json(text: str) -> str | None:
     """Pull a JSON object out of a possibly chatty / fenced response."""
     if not text:
@@ -260,6 +346,7 @@ async def _post(payload: dict[str, Any]) -> dict[str, Any]:
     last_error = "unknown error"
     for attempt in range(MAX_RETRIES):
         await _limiter.acquire()
+        await _record_call()
         try:
             response = await _http().post(URL, json=payload, headers=headers)
         except httpx.TimeoutException:
@@ -409,9 +496,15 @@ async def parse_json(
         candidate = extract_json(raw)
         if candidate:
             try:
-                return schema.model_validate(json.loads(candidate))
+                parsed = schema.model_validate(json.loads(candidate))
             except (json.JSONDecodeError, ValidationError) as exc:
                 problem = str(exc)[:400]
+            else:
+                leak = _leaked_instruction(parsed.model_dump())
+                if leak:
+                    problem = f"response echoed system-prompt/task framing instead of answering it (starts: {leak!r})"
+                else:
+                    return parsed
         else:
             problem = "no JSON object found in the response"
 

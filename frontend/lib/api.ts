@@ -15,6 +15,7 @@ import type {
   Prerequisite,
   RelatedWork,
   SearchDetail,
+  SearchDiff,
 } from "./types";
 
 export const API_BASE =
@@ -99,6 +100,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ arxiv_id, search_id: search_id ?? null }),
     }),
+  removePaper: (paper_id: string) =>
+    request<{ removed: boolean; searches_updated: string[] }>(
+      `/api/papers/${paper_id}`,
+      { method: "DELETE" },
+    ),
   askPaper: (paper_id: string, question: string) =>
     request<ChatAnswer>(`/api/papers/${paper_id}/chat`, {
       method: "POST",
@@ -136,6 +142,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ card_id, answer }),
     }),
+  relationshipCards: (search_id: string) =>
+    request<{ cards: Flashcard[]; generated: number }>(
+      `/api/searches/${search_id}/relationship-cards`,
+      { method: "POST" },
+    ),
+  searchDiff: (a: string, b: string) =>
+    request<SearchDiff>(
+      `/api/search-diff?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`,
+    ),
   runDigest: (search_id: string) =>
     request<Digest>(`/api/searches/${search_id}/digest`, { method: "POST" }),
   digests: (search_id: string) =>
