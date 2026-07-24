@@ -4,6 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, downloadFile } from "@/lib/api";
 import type { AppState, Health, Job, SearchDetail } from "@/lib/types";
 import PipelineCard from "@/components/PipelineCard";
+import LibrarySearch from "@/components/LibrarySearch";
+import UploadPdf from "@/components/UploadPdf";
+import ReadingNudges from "@/components/ReadingNudges";
 import PaperList from "@/components/PaperList";
 import PaperWorkspace from "@/components/PaperWorkspace";
 import FieldDigest from "@/components/FieldDigest";
@@ -215,6 +218,14 @@ export default function Home() {
     }
   };
 
+  const handleUploaded = async (paperId: string) => {
+    setSubmitError(null);
+    setScope("all"); // an upload isn't part of any one search's results
+    const hasResults = await refresh();
+    if (hasResults) setView("results");
+    setSelected(paperId);
+  };
+
   return (
     <div className="mx-auto max-w-5xl px-4 pb-24 sm:px-6">
       {/* ---------------------------------------------------------------- */}
@@ -247,6 +258,7 @@ export default function Home() {
             Map it
           </button>
         </form>
+        <UploadPdf disabled={view === "running"} onUploaded={handleUploaded} />
         <ModelPicker
           health={health}
           busy={view === "running"}
@@ -413,6 +425,8 @@ export default function Home() {
               </div>
             </div>
 
+            {scope === "all" ? <LibrarySearch onSelectPaper={setSelected} /> : null}
+
             {mapView === "map" ? (
               <ReadingMap
                 papers={mapData?.papers ?? app.papers}
@@ -547,6 +561,7 @@ export default function Home() {
               key={`digest-${search.id}`}
               searchId={search.id}
               papers={app.papers}
+              followed={Boolean(search.followed)}
               onSelect={setSelected}
               onUpdated={() => {
                 api.state().then(setApp).catch(() => {});
@@ -585,6 +600,7 @@ export default function Home() {
 
           <section className="space-y-3">
             <SectionTitle icon="→">Suggested reading order</SectionTitle>
+            <ReadingNudges searchId={search.id} onSelectPaper={setSelected} />
             <ReadingOrderSection
               readingOrder={search.reading_order}
               papers={app.papers}

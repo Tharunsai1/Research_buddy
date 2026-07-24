@@ -16,7 +16,13 @@ from models import (
     FlashcardSetOut,
     GradeOut,
     Paper,
+    ReadingNudge,
 )
+
+# A single low-scoring review is already a signal worth surfacing; the bar
+# is deliberately low because being wrong once on a foundational concept is
+# exactly the case this feature exists to catch.
+WEAK_SCORE_THRESHOLD = 65
 
 # ---------------------------------------------------------------------------
 # Card generation
@@ -206,6 +212,71 @@ async def grade_answer(
         ),
         max_tokens=900,
     )
+
+
+# ---------------------------------------------------------------------------
+# Reading recommendations
+# ---------------------------------------------------------------------------
+
+def reading_nudges(
+    search: dict, papers: dict[str, Paper], cards_by_paper: dict[str, list[Flashcard]]
+) -> list[ReadingNudge]:
+    """Cross-reference quiz performance with the reading order's own
+    dependency edges — no LLM call, everything here already exists from
+    quiz grading and landscape synthesis.
+
+    A paper only surfaces here if the reader is scoring poorly on it AND a
+    later paper in this search explicitly builds on it (`kind="builds_on"` or
+    `"extends"`, source depends on target). A weak score with nothing
+    depending on it isn't actionable as "reread before continuing" — the
+    Study Deck's own due/score display already covers that case.
+    """
+    known = {step["paper_id"] for step in search.get("reading_order") or []}
+
+    performance: dict[str, tuple[float, int]] = {}
+    for paper_id, cards in cards_by_paper.items():
+        if paper_id not in known:
+            continue
+        reviewed = [
+            c for c in cards
+            if c.kind != "relationship" and c.reps > 0 and c.last_score is not None
+        ]
+        if reviewed:
+            avg = sum(c.last_score for c in reviewed) / len(reviewed)
+            performance[paper_id] = (avg, len(reviewed))
+
+    weak = {pid for pid, (avg, _) in performance.items() if avg < WEAK_SCORE_THRESHOLD}
+    if not weak:
+        return []
+
+    dependents: dict[str, list[str]] = {pid: [] for pid in weak}
+    for edge in search.get("edges") or []:
+        if edge.get("kind") not in ("builds_on", "extends"):
+            continue
+        source, target = edge.get("source"), edge.get("target")
+        if target in weak and source in known and source != target:
+            dependents[target].append(source)
+
+    nudges: list[ReadingNudge] = []
+    for paper_id in weak:
+        blockers = dependents.get(paper_id) or []
+        if not blockers:
+            continue
+        avg, count = performance[paper_id]
+        weak_paper = papers.get(paper_id)
+        nudges.append(
+            ReadingNudge(
+                weak_paper_id=paper_id,
+                weak_paper_title=weak_paper.title if weak_paper else paper_id,
+                avg_score=round(avg, 1),
+                reviewed_count=count,
+                blocks=blockers,
+                blocks_titles=[papers[b].title if b in papers else b for b in blockers],
+            )
+        )
+    # Worst performance first — the most urgent reread.
+    nudges.sort(key=lambda n: n.avg_score)
+    return nudges
 
 
 # ---------------------------------------------------------------------------

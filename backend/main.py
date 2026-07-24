@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 import re
 import time
 from contextlib import asynccontextmanager
@@ -12,13 +14,16 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent / ".env")  # before importing modules that read env
 
-from fastapi import FastAPI, HTTPException, Response  # noqa: E402
+from fastapi import FastAPI, File, HTTPException, Response, UploadFile  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 import citations  # noqa: E402
+import library_search  # noqa: E402
 import llm  # noqa: E402
 import openrouter  # noqa: E402
+import pdf_ingest  # noqa: E402
+import scheduler  # noqa: E402
 import store  # noqa: E402
 from arxiv_client import ArxivUnavailable, fetch_by_id, search_arxiv  # noqa: E402
 from chat import answer_question as chat_with_paper_impl  # noqa: E402
@@ -31,12 +36,13 @@ from learning import (  # noqa: E402
     generate_cards,
     grade_answer,
     is_due,
+    reading_nudges,
     relationship_cards,
     schedule,
     to_anki_tsv,
 )
 from models import Digest, Flashcard, MatrixRow, Paper  # noqa: E402
-from synthesize import expand_queries  # noqa: E402
+from synthesize import expand_queries, update_global_map  # noqa: E402
 from research import (  # noqa: E402
     build_field_report,
     build_matrix_row,
@@ -52,6 +58,61 @@ from pipeline import FINAL_PAPERS, run_pipeline  # noqa: E402
 from rerank import ce_status, warm_cross_encoder  # noqa: E402
 
 
+_scheduler_log = logging.getLogger("research-copilot.scheduler")
+
+# How often to check whether any followed search is due — not the digest
+# interval itself (scheduler.DIGEST_INTERVAL_DAYS, ~weekly). Checking hourly
+# costs nothing (a no-op when nothing is due) and means a search becomes
+# current again within an hour of the backend coming back up, rather than
+# waiting for the next weekly boundary that already passed while it was off.
+DIGEST_CHECK_INTERVAL = int(os.getenv("RC_DIGEST_CHECK_INTERVAL", str(60 * 60)))
+
+
+async def _run_due_digests() -> None:
+    """One scheduler tick: refresh every followed search that's due.
+
+    This can only run while the backend process is alive — see scheduler.py.
+    Digest runs cost real LLM calls, so this respects the same OpenRouter
+    daily cap the model picker already warns about, and silently skips a
+    tick entirely rather than partially running through the cap.
+    """
+    snapshot = store.collection_snapshot()
+    followed = [meta for meta in snapshot["searches"] if meta.get("followed")]
+    if not followed:
+        return
+
+    status = await llm.provider_status()
+    if not status["ready"]:
+        return
+    if status["provider"] == "openrouter" and openrouter.daily_usage()["near_cap"]:
+        _scheduler_log.info("skipping auto-digest tick: near the daily OpenRouter cap")
+        return
+
+    for meta in followed:
+        search = store.load_search(meta["id"])
+        if search is None:
+            continue
+        digests = store.load_digests(search["id"])
+        latest = digests[0] if digests else None
+        if not scheduler.is_digest_due(search, latest):
+            continue
+        try:
+            await _build_and_save_digest(search)
+        except Exception:
+            _scheduler_log.exception("auto-digest failed for search %s", search["id"])
+
+
+async def _digest_scheduler_loop() -> None:
+    while True:
+        try:
+            await _run_due_digests()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _scheduler_log.exception("digest scheduler tick failed")
+        await asyncio.sleep(DIGEST_CHECK_INTERVAL)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     warm_cross_encoder()
@@ -62,7 +123,13 @@ async def lifespan(_: FastAPI):
             llm.set_engine(saved)
         except llm.LLMError:
             pass  # engine disappeared from the config; fall back to the default
+    scheduler_task = asyncio.create_task(_digest_scheduler_loop())
     yield
+    scheduler_task.cancel()
+    try:
+        await scheduler_task
+    except asyncio.CancelledError:
+        pass
 
 
 app = FastAPI(title="Research Copilot API", lifespan=lifespan)
@@ -242,6 +309,27 @@ def get_prerequisites(limit: int = 20, search_id: str | None = None):
     }
 
 
+@app.get("/api/library/search")
+async def search_library(q: str, limit: int = 10):
+    """Semantic search across every paper collected, not just one search's
+    results — "which of my papers discussed KV-cache compression?" without
+    remembering which search turned it up."""
+    papers = {p.id: p for p in store.all_papers()}
+    extractions = store.all_extractions()
+    try:
+        results = await library_search.search(q, papers, extractions, limit=limit)
+    except llm.LLMError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return {
+        "query": q,
+        "results": [
+            {**hit, "paper": papers[hit["paper_id"]].model_dump()}
+            for hit in results
+            if hit["paper_id"] in papers
+        ],
+    }
+
+
 class AddPaperRequest(BaseModel):
     arxiv_id: str
     search_id: str | None = None
@@ -382,6 +470,81 @@ async def add_paper(request: AddPaperRequest):
     }
 
 
+MAX_UPLOAD_BYTES = 40 * 1024 * 1024  # 40MB — comfortably above a typical paper
+
+
+@app.post("/api/papers/upload")
+async def upload_paper(file: UploadFile = File(...)):
+    """A paper that isn't on arXiv — a camera-ready, something emailed by a
+    professor, a workshop paper never posted. Extracted text flows through
+    the exact same extraction, clustering, deep-dive and flashcard machinery
+    as an arXiv result; only where the full text is fetched from differs
+    (see the upload check inside _run_deep_dive).
+    """
+    if file.content_type not in ("application/pdf", "application/octet-stream", None):
+        raise HTTPException(400, "Only PDF files are supported.")
+
+    data = await file.read()
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(400, f"File is too large (max {MAX_UPLOAD_BYTES // (1024 * 1024)}MB).")
+    if not data:
+        raise HTTPException(400, "The uploaded file is empty.")
+
+    status = await llm.provider_status()
+    if not status["ready"]:
+        raise HTTPException(400, status["detail"])
+
+    try:
+        paper, full = await asyncio.to_thread(pdf_ingest.extract_pdf, data, file.filename or "")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(400, f"Could not read this PDF: {exc}") from exc
+
+    if any(p.id == paper.id for p in store.all_papers()):
+        return {"added": False, "reason": "This exact file is already in your library.", "paper_id": paper.id}
+
+    try:
+        extraction = await extract_paper(paper)
+    except llm.LLMError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+    store.save_upload(paper.id, data)
+    store.merge_search_results("Uploaded", [paper], {paper.id: extraction})
+
+    # Place it in the global map the same way a real search's results are —
+    # incremental past FULL_RECLUSTER_MAX, so this stays cheap regardless of
+    # library size.
+    snapshot = store.collection_snapshot()
+    prior_searches = len(snapshot["searches"])
+    if prior_searches == 0:
+        store.set_global_map(clusters=[{"name": "Uploaded", "paper_ids": [paper.id]}], bridge_edges=[])
+    else:
+        global_map = await update_global_map(
+            store.all_papers(),
+            store.all_extractions(),
+            store.paper_search_map(),
+            store.existing_map(),
+            paper.title,
+        )
+        store.set_global_map(**global_map)
+
+    return {
+        "added": True,
+        "paper_id": paper.id,
+        "title": paper.title,
+        "word_count": full.total_words,
+    }
+
+
+@app.get("/api/papers/{paper_id:path}/pdf")
+def get_uploaded_pdf(paper_id: str):
+    data = store.load_upload(paper_id)
+    if data is None:
+        raise HTTPException(404, "No uploaded PDF stored for this paper.")
+    return Response(content=data, media_type="application/pdf")
+
+
 @app.get("/api/searches/{search_id}")
 def get_search(search_id: str):
     search = store.load_search(search_id)
@@ -427,7 +590,7 @@ def field_report(search_id: str):
         "avg_score": (sum(scores) / len(scores)) if scores else None,
     }
 
-    content = build_field_report(search, _papers_by_id(), card_stats)
+    content = build_field_report(search, _papers_by_id(), card_stats, store.all_notes())
     filename = f"{search_id}-field-report.md"
     return Response(
         content=content,
@@ -454,19 +617,36 @@ async def _run_deep_dive(job, paper: Paper) -> None:
     try:
         stage = job.stage("fetch")
         stage.status = "active"
-        stage.detail = "Fetching full text from arXiv…"
-        full = await asyncio.to_thread(load_fulltext, paper.id)
-        if full is None:
-            # Deliberately refuse rather than read whatever arXiv served. For a
-            # paper with no HTML rendering arXiv returns the /abs/ landing page,
-            # and summarising that produces a confident-looking deep dive built
-            # from an abstract — worse than no deep dive at all.
-            raise RuntimeError(
-                "arXiv has no HTML full text for this paper, only the abstract page "
-                "(papers before ~2023 are often PDF-only), so there is nothing to read "
-                "in depth. The summary, extraction and flashcards built from the "
-                "abstract still work — open the PDF for the full paper."
+
+        # An uploaded paper's text already lives on disk — no arXiv fetch
+        # applies (there's nothing to fetch it from). Every stage after this
+        # one operates on the same FullText shape regardless of source.
+        upload_bytes = store.load_upload(paper.id)
+        if upload_bytes is not None:
+            stage.detail = "Reading the uploaded PDF…"
+            full = await asyncio.to_thread(
+                pdf_ingest.fulltext_from_pdf, paper.id, upload_bytes, paper.abstract
             )
+            if full is None:
+                raise RuntimeError(
+                    "Could not extract enough readable text from this PDF to read it "
+                    "in depth (it may be mostly scanned images). The summary, "
+                    "extraction and flashcards built from the abstract still work."
+                )
+        else:
+            stage.detail = "Fetching full text from arXiv…"
+            full = await asyncio.to_thread(load_fulltext, paper.id)
+            if full is None:
+                # Deliberately refuse rather than read whatever arXiv served. For a
+                # paper with no HTML rendering arXiv returns the /abs/ landing page,
+                # and summarising that produces a confident-looking deep dive built
+                # from an abstract — worse than no deep dive at all.
+                raise RuntimeError(
+                    "arXiv has no HTML full text for this paper, only the abstract page "
+                    "(papers before ~2023 are often PDF-only), so there is nothing to read "
+                    "in depth. The summary, extraction and flashcards built from the "
+                    "abstract still work — open the PDF for the full paper."
+                )
         stage.detail = f"{full.total_words:,} words · {len(full.sections)} sections"
         stage.status = "done"
         job.partial["source_url"] = full.source_url
@@ -573,6 +753,25 @@ def get_deep_dive(paper_id: str):
     if deep is None:
         raise HTTPException(404, "This paper has not been deep-read yet.")
     return deep
+
+
+class NoteRequest(BaseModel):
+    text: str
+
+
+@app.get("/api/papers/{paper_id:path}/note")
+def get_note(paper_id: str):
+    """The reader's own free-text note on a paper — separate from anything
+    AI-generated, and the one place in the app where their own thinking lives."""
+    return {"paper_id": paper_id, "text": store.get_note(paper_id)}
+
+
+@app.post("/api/papers/{paper_id:path}/note")
+def set_note(paper_id: str, request: NoteRequest):
+    if len(request.text) > 20_000:
+        raise HTTPException(400, "Note is too long (20,000 characters max).")
+    saved = store.set_note(paper_id, request.text)
+    return {"paper_id": paper_id, "text": saved}
 
 
 @app.delete("/api/papers/{paper_id:path}")
@@ -806,6 +1005,22 @@ def make_relationship_cards(search_id: str):
     return {"cards": saved, "generated": len(saved)}
 
 
+@app.get("/api/searches/{search_id}/reading-nudges")
+def get_reading_nudges(search_id: str):
+    """Papers the reader is quizzing poorly on that a later paper in this
+    search's reading order explicitly builds on — a reason to reread before
+    continuing, joined from flashcard scores and the landscape's own edges."""
+    search = store.load_search(search_id)
+    if search is None:
+        raise HTTPException(404, "Search not found.")
+    paper_ids = search.get("paper_ids") or []
+    cards_by_paper = {
+        pid: [Flashcard(**c) for c in store.load_cards(pid)] for pid in paper_ids
+    }
+    nudges = reading_nudges(search, _papers_by_id(), cards_by_paper)
+    return {"nudges": [n.model_dump() for n in nudges]}
+
+
 @app.get("/api/cards")
 def list_cards(due_only: bool = False, paper_id: str | None = None):
     raw = store.load_cards(paper_id) if paper_id else store.all_cards()
@@ -871,22 +1086,15 @@ async def grade_card(request: GradeRequest):
     return {"grade": grade.model_dump(), "card": updated.model_dump()}
 
 
-@app.post("/api/searches/{search_id}/digest")
-async def run_digest(search_id: str, max_new: int = 6):
-    search = store.load_search(search_id)
-    if search is None:
-        raise HTTPException(404, "Search not found.")
-
-    status = await llm.provider_status()
-    if not status["ready"]:
-        raise HTTPException(400, status["detail"])
-
+async def _build_and_save_digest(search: dict, max_new: int = 6) -> Digest:
+    """The digest logic itself, shared by the on-demand endpoint and the
+    background scheduler for followed searches — one place that decides what
+    a digest run does, so a manual check and an automatic one behave
+    identically."""
+    search_id = search["id"]
     query = search.get("query") or ""
     queries = await expand_queries(query)
-    try:
-        candidates = await asyncio.to_thread(search_arxiv, queries, 25, 60, True)
-    except ArxivUnavailable as exc:
-        raise HTTPException(503, str(exc)) from exc
+    candidates = await asyncio.to_thread(search_arxiv, queries, 25, 60, True)
     known = {p.id for p in store.all_papers()}
     fresh = [paper for paper in candidates if paper.id not in known][:max_new]
 
@@ -905,17 +1113,35 @@ async def run_digest(search_id: str, max_new: int = 6):
             highlights=[],
         )
         store.save_digest(search_id, digest.model_dump())
-        return digest.model_dump()
+        return digest
 
-    try:
-        extractions = await extract_many(fresh, store.get_cached_extractions([p.id for p in fresh]), lambda *_: None)
-        digest = await build_digest(search, fresh, extractions, len(candidates))
-    except llm.LLMError as exc:
-        raise HTTPException(502, str(exc)) from exc
+    extractions = await extract_many(
+        fresh, store.get_cached_extractions([p.id for p in fresh]), lambda *_: None
+    )
+    digest = await build_digest(search, fresh, extractions, len(candidates))
 
     # Fold the new papers into the library so the map can grow with them.
     store.merge_search_results(query, fresh, extractions)
     store.save_digest(search_id, digest.model_dump())
+    return digest
+
+
+@app.post("/api/searches/{search_id}/digest")
+async def run_digest(search_id: str, max_new: int = 6):
+    search = store.load_search(search_id)
+    if search is None:
+        raise HTTPException(404, "Search not found.")
+
+    status = await llm.provider_status()
+    if not status["ready"]:
+        raise HTTPException(400, status["detail"])
+
+    try:
+        digest = await _build_and_save_digest(search, max_new)
+    except ArxivUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except llm.LLMError as exc:
+        raise HTTPException(502, str(exc)) from exc
     return digest.model_dump()
 
 
@@ -924,8 +1150,28 @@ def get_digests(search_id: str):
     return {"digests": store.load_digests(search_id)}
 
 
+class FollowRequest(BaseModel):
+    followed: bool
+
+
+@app.post("/api/searches/{search_id}/follow")
+def set_followed(search_id: str, request: FollowRequest):
+    """Mark a search to auto-refresh its field digest roughly weekly, while
+    the backend process is running (see the scheduler in lifespan) — there is
+    no external cron here, so "weekly" means "next time a week has passed
+    and the backend happens to be up," not a guaranteed wall-clock trigger.
+    """
+    search = store.load_search(search_id)
+    if search is None:
+        raise HTTPException(404, "Search not found.")
+    search["followed"] = request.followed
+    store.save_search(search)
+    return {"search_id": search_id, "followed": request.followed}
+
+
 class ChatRequest(BaseModel):
     question: str
+    anchor: str | None = None  # a passage the reader highlighted before asking
 
 
 @app.post("/api/papers/{paper_id:path}/chat")
@@ -935,6 +1181,9 @@ async def chat_with_paper(paper_id: str, request: ChatRequest):
         raise HTTPException(400, "Question is empty.")
     if len(question) > 500:
         raise HTTPException(400, "Question is too long (500 chars max).")
+    anchor = (request.anchor or "").strip() or None
+    if anchor and len(anchor) > 2000:
+        raise HTTPException(400, "Highlighted passage is too long (2,000 chars max).")
 
     papers = {p.id: p for p in store.all_papers()}
     paper = papers.get(paper_id)
@@ -947,7 +1196,7 @@ async def chat_with_paper(paper_id: str, request: ChatRequest):
             400, "Read the full paper first — chat needs the indexed full text."
         )
     try:
-        answer = await chat_with_paper_impl(paper, question, index)
+        answer = await chat_with_paper_impl(paper, question, index, anchor=anchor)
     except llm.LLMError as exc:
         raise HTTPException(502, str(exc)) from exc
     return answer.model_dump()

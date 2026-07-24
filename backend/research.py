@@ -359,10 +359,18 @@ def diff_searches(a: dict, b: dict, papers: dict[str, Paper]) -> dict:
 _STAGE_LABEL = {"foundation": "Foundations", "core": "Core methods", "frontier": "Frontier"}
 
 
-def build_field_report(search: dict, papers: dict[str, Paper], card_stats: dict) -> str:
+def build_field_report(
+    search: dict,
+    papers: dict[str, Paper],
+    card_stats: dict,
+    notes: dict[str, str] | None = None,
+) -> str:
     """Bundle a search's landscape + reading order + flashcard progress into
     one exportable Markdown document — no LLM call, everything here already
     exists from earlier synthesis and study-deck use.
+
+    `notes` are the one part of the report that is not AI-generated — the
+    reader's own thinking, included verbatim rather than summarized.
     """
     lines: list[str] = [f"# {search.get('title') or search.get('query')}", ""]
     lines.append(
@@ -418,6 +426,20 @@ def build_field_report(search: dict, papers: dict[str, Paper], card_stats: dict)
                 paper = papers.get(step["paper_id"])
                 title = paper.title if paper else step["paper_id"]
                 lines.append(f"{index}. **{title}** — {step.get('why', '')}")
+            lines.append("")
+
+    paper_ids = search.get("paper_ids") or []
+    notes = notes or {}
+    if any((notes.get(pid) or "").strip() for pid in paper_ids):
+        lines += ["## Your notes", ""]
+        for pid in paper_ids:
+            text = (notes.get(pid) or "").strip()
+            if not text:
+                continue
+            paper = papers.get(pid)
+            lines.append(f"**{paper.title if paper else pid}**")
+            lines.append("")
+            lines.append("> " + text.replace("\n", "\n> "))
             lines.append("")
 
     lines += ["## Study progress", ""]

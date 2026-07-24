@@ -86,6 +86,7 @@ export interface SearchDetail {
   consensus: string[];
   open_problems: OpenProblem[];
   reading_order: ReadingStep[];
+  followed?: boolean;
 }
 
 export interface SearchMeta {
@@ -324,6 +325,26 @@ export interface SearchDiff {
   tensions_removed: string[];
   open_problems_added: string[];
   open_problems_removed: string[];
+}
+
+export interface LibrarySearchHit {
+  paper_id: string;
+  score: number;
+  paper: Paper;
+}
+
+export interface LibrarySearchResult {
+  query: string;
+  results: LibrarySearchHit[];
+}
+
+export interface ReadingNudge {
+  weak_paper_id: string;
+  weak_paper_title: string;
+  avg_score: number;
+  reviewed_count: number;
+  blocks: string[];
+  blocks_titles: string[];
 }
 
 export interface StageState {

@@ -7,6 +7,7 @@ import type { Digest, Paper } from "@/lib/types";
 interface Props {
   searchId: string;
   papers: Record<string, Paper>;
+  followed: boolean;
   onSelect: (paperId: string) => void;
   onUpdated: () => void;
 }
@@ -21,10 +22,27 @@ function timeAgo(iso: string): string {
   return new Date(iso).toISOString().slice(0, 10);
 }
 
-export default function FieldDigest({ searchId, papers, onSelect, onUpdated }: Props) {
+export default function FieldDigest({ searchId, papers, followed, onSelect, onUpdated }: Props) {
   const [digests, setDigests] = useState<Digest[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [followBusy, setFollowBusy] = useState(false);
+  const [followState, setFollowState] = useState(followed);
+
+  useEffect(() => setFollowState(followed), [followed, searchId]);
+
+  const toggleFollow = async () => {
+    setFollowBusy(true);
+    const next = !followState;
+    try {
+      await api.setFollowed(searchId, next);
+      setFollowState(next);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setFollowBusy(false);
+    }
+  };
 
   const load = useCallback(() => {
     api
@@ -73,6 +91,22 @@ export default function FieldDigest({ searchId, papers, onSelect, onUpdated }: P
             last checked {timeAgo(latest.created_at)}
           </span>
         ) : null}
+        <button
+          onClick={toggleFollow}
+          disabled={followBusy}
+          title={
+            followState
+              ? "Auto-refreshes roughly weekly while the backend is running — not a guaranteed background service"
+              : "Follow this field to auto-refresh its digest roughly weekly whenever the backend is running"
+          }
+          className={
+            followState
+              ? "ml-auto rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 transition hover:border-emerald-300"
+              : "ml-auto rounded-lg border border-stone-200 bg-white px-3 py-1.5 text-xs font-medium text-stone-500 transition hover:border-stone-400"
+          }
+        >
+          {followState ? "🔔 Following" : "🔕 Follow this field"}
+        </button>
       </div>
 
       {error ? (
@@ -85,7 +119,10 @@ export default function FieldDigest({ searchId, papers, onSelect, onUpdated }: P
         <p className="text-sm leading-relaxed text-stone-500">
           Re-runs this search against arXiv, keeps only papers your library doesn&apos;t
           have, and tells you what actually changed — including anything that
-          challenges the consensus you already mapped.
+          challenges the consensus you already mapped. Follow a field to have this
+          happen on its own roughly once a week, whenever the backend is running — it
+          isn&apos;t a background service, so a check that was due while the backend was
+          off simply runs the next time it starts up.
         </p>
       ) : null}
 

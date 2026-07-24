@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api } from "@/lib/api";
+import { createPortal } from "react-dom";
+import { API_BASE, api } from "@/lib/api";
 import type {
   ChatAnswer,
   DeepDive,
@@ -104,10 +105,22 @@ export default function PaperWorkspace({
   const [removing, setRemoving] = useState(false);
   const [question, setQuestion] = useState("");
   const [chatLog, setChatLog] = useState<
-    { question: string; answer?: ChatAnswer; error?: string }[]
+    { question: string; anchor?: string; answer?: ChatAnswer; error?: string }[]
   >([]);
   const [asking, setAsking] = useState(false);
+  const [highlight, setHighlight] = useState<{ text: string; top: number; left: number } | null>(
+    null,
+  );
+  const [pendingAnchor, setPendingAnchor] = useState<string | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const [noteText, setNoteText] = useState("");
+  const [noteSaved, setNoteSaved] = useState("");
+  const [noteLoaded, setNoteLoaded] = useState(false);
+  const [noteSaving, setNoteSaving] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const noteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const noteRef = useRef({ text: "", saved: "" });
+  noteRef.current = { text: noteText, saved: noteSaved };
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -129,6 +142,85 @@ export default function PaperWorkspace({
       .then(setDeep)
       .catch(() => setDeep(null));
   }, [paper.id, hasDeep]);
+
+  // Highlight-and-ask: a document-level listener (not one scoped to the
+  // content div) so the floating button also disappears when the reader
+  // clicks away to somewhere else in the workspace, not just when they make
+  // a new selection inside the reading pane. Gated on `deep` because the
+  // Chat tab itself is — "Ask about this" would otherwise be a dead end.
+  useEffect(() => {
+    const onSelection = () => {
+      const selection = window.getSelection();
+      const text = selection?.toString().trim() ?? "";
+      if (!deep || !text || text.length < 3 || text.length > 2000 || !selection?.rangeCount) {
+        setHighlight(null);
+        return;
+      }
+      const range = selection.getRangeAt(0);
+      if (!contentRef.current?.contains(range.commonAncestorContainer)) {
+        setHighlight(null);
+        return;
+      }
+      const rect = range.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) {
+        setHighlight(null);
+        return;
+      }
+      setHighlight({ text, top: Math.max(rect.top - 44, 8), left: rect.left + rect.width / 2 });
+    };
+    document.addEventListener("mouseup", onSelection);
+    document.addEventListener("keyup", onSelection);
+    return () => {
+      document.removeEventListener("mouseup", onSelection);
+      document.removeEventListener("keyup", onSelection);
+    };
+  }, [deep]);
+
+  // Notes: load fresh whenever the open paper changes, then autosave 800ms
+  // after typing stops so there is no separate Save button to remember to
+  // click. The workspace can switch straight from one paper to another
+  // without unmounting (no `key` on this component in page.tsx), so a
+  // pending edit is flushed in this effect's own cleanup — covering both a
+  // paper switch and the workspace closing, not just an unmount.
+  useEffect(() => {
+    setNoteLoaded(false);
+    let cancelled = false;
+    api
+      .getNote(paper.id)
+      .then((result) => {
+        if (cancelled) return;
+        setNoteText(result.text);
+        setNoteSaved(result.text);
+        setNoteLoaded(true);
+      })
+      .catch(() => {
+        if (!cancelled) setNoteLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+      if (noteTimerRef.current) clearTimeout(noteTimerRef.current);
+      const { text, saved } = noteRef.current;
+      if (text !== saved) {
+        api.setNote(paper.id, text).catch(() => {});
+      }
+    };
+  }, [paper.id]);
+
+  useEffect(() => {
+    if (!noteLoaded || noteText === noteSaved) return;
+    if (noteTimerRef.current) clearTimeout(noteTimerRef.current);
+    noteTimerRef.current = setTimeout(() => {
+      setNoteSaving(true);
+      api
+        .setNote(paper.id, noteText)
+        .then((result) => setNoteSaved(result.text))
+        .catch(() => {})
+        .finally(() => setNoteSaving(false));
+    }, 800);
+    return () => {
+      if (noteTimerRef.current) clearTimeout(noteTimerRef.current);
+    };
+  }, [noteText, noteSaved, noteLoaded, paper.id]);
 
   const pollJob = useCallback(
     (jobId: string) => {
@@ -201,11 +293,13 @@ export default function PaperWorkspace({
     event.preventDefault();
     const q = question.trim();
     if (!q || asking) return;
+    const anchor = pendingAnchor ?? undefined;
     setQuestion("");
-    setChatLog((log) => [...log, { question: q }]);
+    setPendingAnchor(null);
+    setChatLog((log) => [...log, { question: q, anchor }]);
     setAsking(true);
     try {
-      const answer = await api.askPaper(paper.id, q);
+      const answer = await api.askPaper(paper.id, q, anchor);
       setChatLog((log) =>
         log.map((entry, i) => (i === log.length - 1 ? { ...entry, answer } : entry)),
       );
@@ -217,6 +311,14 @@ export default function PaperWorkspace({
     } finally {
       setAsking(false);
     }
+  };
+
+  const useHighlight = () => {
+    if (!highlight) return;
+    setPendingAnchor(highlight.text);
+    setTab("chat");
+    setHighlight(null);
+    window.getSelection()?.removeAllRanges();
   };
 
   const running = job?.status === "running";
@@ -273,6 +375,19 @@ export default function PaperWorkspace({
       aria-modal="true"
       aria-label={paper.title}
     >
+      {highlight
+        ? createPortal(
+            <button
+              onClick={useHighlight}
+              style={{ top: highlight.top, left: highlight.left, transform: "translateX(-50%)" }}
+              className="fixed z-[60] whitespace-nowrap rounded-full bg-stone-900 px-3 py-1.5 text-xs font-medium text-white shadow-lg transition hover:bg-stone-700"
+            >
+              💬 Ask about this
+            </button>,
+            document.body,
+          )
+        : null}
+
       <div className="mx-auto w-full max-w-4xl rounded-2xl border border-stone-200 bg-[#fbfaf9] shadow-xl">
         {/* Header ------------------------------------------------------- */}
         <div className="border-b border-stone-200 p-6 pb-4">
@@ -303,16 +418,25 @@ export default function PaperWorkspace({
           </div>
 
           <div className="mt-4 flex flex-wrap items-center gap-2">
+            {paper.arxiv_url ? (
+              <a
+                href={paper.arxiv_url}
+                target="_blank"
+                rel="noreferrer"
+                className="rounded-lg border border-stone-200 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 transition hover:bg-stone-100"
+              >
+                ↗ arXiv
+              </a>
+            ) : (
+              <span
+                title="Uploaded directly — not published on arXiv"
+                className="rounded-lg border border-stone-200 bg-stone-50 px-3 py-1.5 text-sm font-medium text-stone-400"
+              >
+                📄 Uploaded PDF
+              </span>
+            )}
             <a
-              href={paper.arxiv_url}
-              target="_blank"
-              rel="noreferrer"
-              className="rounded-lg border border-stone-200 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 transition hover:bg-stone-100"
-            >
-              ↗ arXiv
-            </a>
-            <a
-              href={paper.pdf_url}
+              href={paper.pdf_url.startsWith("/") ? `${API_BASE}${paper.pdf_url}` : paper.pdf_url}
               target="_blank"
               rel="noreferrer"
               className="rounded-lg border border-stone-200 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 transition hover:bg-stone-100"
@@ -421,7 +545,7 @@ export default function PaperWorkspace({
         </div>
 
         {/* Body --------------------------------------------------------- */}
-        <div className="p-6">
+        <div className="p-6" ref={contentRef}>
           {/* Deep-dive progress / errors */}
           {running && job ? (
             <div className="mb-5 rounded-xl border border-stone-200 bg-white p-4">
@@ -465,6 +589,24 @@ export default function PaperWorkspace({
           {/* Summary tab */}
           {tab === "summary" ? (
             <div className="space-y-4">
+              <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-4">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-semibold text-stone-900">Your notes</p>
+                  <span className="text-xs text-stone-400">
+                    {noteSaving ? "Saving…" : noteLoaded && noteText ? "Saved" : ""}
+                  </span>
+                </div>
+                <textarea
+                  value={noteText}
+                  onChange={(event) => setNoteText(event.target.value)}
+                  disabled={!noteLoaded}
+                  placeholder="Half-formed thoughts, questions, or how this contradicts another paper — yours, not generated. Saves automatically."
+                  rows={3}
+                  maxLength={20000}
+                  className="mt-2 w-full resize-y rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm leading-relaxed text-stone-800 placeholder:text-stone-400 focus:border-amber-400 focus:outline-none disabled:opacity-60"
+                />
+              </div>
+
               {extraction ? (
                 <>
                   <div className="rounded-xl border border-stone-200 bg-white p-4">
@@ -742,6 +884,14 @@ export default function PaperWorkspace({
               <div className="space-y-4">
                 {chatLog.map((entry, index) => (
                   <div key={index} className="space-y-2">
+                    {entry.anchor ? (
+                      <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs italic leading-relaxed text-amber-800">
+                        “{entry.anchor.length > 180
+                          ? `${entry.anchor.slice(0, 180)}…`
+                          : entry.anchor}
+                        ”
+                      </p>
+                    ) : null}
                     <p className="rounded-xl bg-stone-900 px-4 py-2.5 text-sm text-white">
                       {entry.question}
                     </p>
@@ -782,6 +932,22 @@ export default function PaperWorkspace({
                   </div>
                 ))}
               </div>
+
+              {pendingAnchor ? (
+                <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
+                  <span className="min-w-0 flex-1 italic">
+                    “{pendingAnchor.length > 220 ? `${pendingAnchor.slice(0, 220)}…` : pendingAnchor}”
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setPendingAnchor(null)}
+                    title="Ask without this highlighted passage"
+                    className="shrink-0 text-amber-500 hover:text-amber-700"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ) : null}
 
               <form onSubmit={ask} className="flex gap-2">
                 <input

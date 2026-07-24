@@ -220,6 +220,34 @@ depends on your GPU (the pipeline makes ~11 LLM calls per search). With
 | `RC_DISABLE_CE` | unset | set `1` to skip the cross-encoder (LLM-only ranking) |
 | `S2_API_KEY` | unset | optional Semantic Scholar key; raises the shared rate limit |
 | `RC_OPENROUTER_DAILY_CAP` | `1000` | free-tier daily request budget the model picker warns against; set to `50` if the account has never funded $10 |
+| `RC_DIGEST_CHECK_INTERVAL` | `3600` (1 hour) | how often the follow scheduler checks whether a followed search is due for an auto-digest — not the digest interval itself (fixed at ~7 days, `scheduler.DIGEST_INTERVAL_DAYS`) |
+
+## Six more ways in
+
+- **Search your own library** — a semantic search box appears under *All
+  papers*: "which of my papers discussed KV-cache compression?" without
+  remembering which search turned it up. One embedding per paper, cached; a
+  search costs one query embedding, no LLM call.
+- **Your own notes** — a free-text box at the top of every paper's Summary
+  tab, autosaved 800ms after you stop typing. The one part of the app that
+  isn't AI-generated; included verbatim in the field report export.
+- **Highlight a passage, then ask** — select any text inside a paper's
+  Summary/Explain/Sections/Critique tab and a *💬 Ask about this* button
+  appears. It switches to Chat with that exact passage injected as excerpt
+  `[0]` — the model's primary anchor — rather than hoping retrieval finds it.
+- **Reading nudges** — if you're quizzing poorly on a foundation-stage paper
+  and a later paper in that search's reading order explicitly builds on it,
+  a banner suggests rereading it first. Pure join of flashcard scores and the
+  landscape's own edges; no LLM call.
+- **Upload a PDF** — *⤒ Upload PDF* in the header adds a paper that isn't on
+  arXiv (a camera-ready, something emailed, a workshop paper). Text extraction
+  is heuristic (heading detection, falling back to fixed-size chunks), and
+  author/venue lists are left blank rather than guessed wrong — everything
+  else (extraction, clustering, deep dive, flashcards) runs unchanged.
+- **Follow a field** — a toggle on the field digest auto-refreshes it roughly
+  weekly, respecting the OpenRouter daily cap. This runs in-process, only
+  while the backend is up — there's no external cron, so a check due while
+  the backend was off simply runs the next time it starts.
 
 ## Architecture
 
@@ -234,11 +262,17 @@ backend/
   fulltext.py      arXiv HTML fetch → sections → retrieval chunks
   deepdive.py      per-paper map-reduce: section digests → synthesis,
                    explanations, glossary, critique
-  chat.py          embed + retrieve + answer with citations
+  chat.py          embed + retrieve + answer with citations (+ a highlighted
+                   passage anchor, injected as excerpt [0])
   semantic_scholar.py  cached, rate-limited Graph API client
   citations.py     real citation edges, metrics, prerequisite ranking
   research.py      survey-matrix rows, related-work + BibTeX, comparisons
-  learning.py      flashcards, SM-2 scheduling, answer grading, field digests
+  learning.py      flashcards, SM-2 scheduling, answer grading, field digests,
+                   reading nudges (quiz scores × reading-order edges)
+  library_search.py  semantic search over the whole library (embed once, cache)
+  pdf_ingest.py    uploaded-PDF text extraction into the same Paper/FullText
+                   shapes fulltext.py produces from arXiv HTML
+  scheduler.py     which followed searches are due for an auto-digest
   store.py         JSON persistence + in-memory job registry
   models.py        pydantic schemas (also used as LLM structured outputs)
   meta_guard.py    rejects model meta-commentary ("The user wants me to…")
@@ -253,7 +287,10 @@ frontend/
   components/Prerequisites.tsx    "read these first" + add-to-map
   components/ResearchToolkit.tsx  matrix / related work / compare
   components/StudyDeck.tsx        flashcards + graded quiz mode
-  components/FieldDigest.tsx      "what's new" follow mode
+  components/FieldDigest.tsx      "what's new" + follow toggle for auto-digests
+  components/LibrarySearch.tsx    semantic search over the whole library
+  components/ReadingNudges.tsx    "shaky on X, reread it first" banner
+  components/UploadPdf.tsx        add a paper that isn't on arXiv
   components/…                    pipeline card, clusters, relationships graph,
                                   tensions, consensus, open problems, reading order
 ```

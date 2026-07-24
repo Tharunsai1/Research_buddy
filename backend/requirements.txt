@@ -4,3 +4,5 @@ arxiv
 anthropic
 python-dotenv
 sentence-transformers
+pypdf
+python-multipart

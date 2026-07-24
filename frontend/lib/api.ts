@@ -11,7 +11,9 @@ import type {
   GradeResult,
   Health,
   Job,
+  LibrarySearchResult,
   MatrixRow,
+  ReadingNudge,
   Prerequisite,
   RelatedWork,
   SearchDetail,
@@ -105,10 +107,10 @@ export const api = {
       `/api/papers/${paper_id}`,
       { method: "DELETE" },
     ),
-  askPaper: (paper_id: string, question: string) =>
+  askPaper: (paper_id: string, question: string, anchor?: string) =>
     request<ChatAnswer>(`/api/papers/${paper_id}/chat`, {
       method: "POST",
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({ question, anchor }),
     }),
   matrix: (paper_ids: string[], refresh = false) =>
     request<{ rows: MatrixRow[] }>(`/api/matrix?refresh=${refresh}`, {
@@ -155,6 +157,52 @@ export const api = {
     request<Digest>(`/api/searches/${search_id}/digest`, { method: "POST" }),
   digests: (search_id: string) =>
     request<{ digests: Digest[] }>(`/api/searches/${search_id}/digests`),
+  setFollowed: (search_id: string, followed: boolean) =>
+    request<{ search_id: string; followed: boolean }>(`/api/searches/${search_id}/follow`, {
+      method: "POST",
+      body: JSON.stringify({ followed }),
+    }),
+  librarySearch: (q: string, limit = 10) =>
+    request<LibrarySearchResult>(
+      `/api/library/search?q=${encodeURIComponent(q)}&limit=${limit}`,
+    ),
+  readingNudges: (search_id: string) =>
+    request<{ nudges: ReadingNudge[] }>(`/api/searches/${search_id}/reading-nudges`),
+  uploadPdf: async (
+    file: File,
+  ): Promise<{ added: boolean; paper_id?: string; title?: string; reason?: string; word_count?: number }> => {
+    const formData = new FormData();
+    formData.append("file", file);
+    let response: Response;
+    try {
+      // No Content-Type header here on purpose — the browser sets the
+      // multipart boundary itself; forcing application/json (request<T>'s
+      // default) would break the upload.
+      response = await fetch(`${API_BASE}/api/papers/upload`, { method: "POST", body: formData });
+    } catch {
+      throw new Error(`Backend not reachable at ${API_BASE}. Is uvicorn running?`);
+    }
+    if (!response.ok) {
+      let detail = `Upload failed (${response.status})`;
+      try {
+        const body = await response.json();
+        if (body?.detail) detail = String(body.detail);
+      } catch {
+        /* keep default detail */
+      }
+      throw new Error(detail);
+    }
+    return response.json();
+  },
+  getNote: (paperId: string) =>
+    request<{ paper_id: string; text: string }>(
+      `/api/papers/${encodeURIComponent(paperId)}/note`,
+    ),
+  setNote: (paperId: string, text: string) =>
+    request<{ paper_id: string; text: string }>(
+      `/api/papers/${encodeURIComponent(paperId)}/note`,
+      { method: "POST", body: JSON.stringify({ text }) },
+    ),
 };
 
 /** Downloads that stream a file back rather than JSON. */

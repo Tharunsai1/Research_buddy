@@ -120,6 +120,7 @@ async def _run(job: Job) -> None:
             {"paper_id": selected[s.index - 1].id, "stage": s.stage, "why": s.why}
             for s in landscape.reading_order
         ],
+        "followed": False,
     }
 
     store.merge_search_results(query, selected, extractions)

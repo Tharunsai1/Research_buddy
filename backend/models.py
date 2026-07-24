@@ -505,6 +505,19 @@ class DigestOut(BaseModel):
     )
 
 
+class ReadingNudge(BaseModel):
+    """A foundation/core paper the reader is scoring poorly on that a later
+    paper in the same search explicitly builds on — a reason to reread it
+    before continuing, not just a low score in isolation."""
+
+    weak_paper_id: str
+    weak_paper_title: str
+    avg_score: float
+    reviewed_count: int
+    blocks: list[str]           # paper_ids of dependents
+    blocks_titles: list[str]
+
+
 class DigestHighlight(BaseModel):
     paper_id: str
     why_it_matters: str

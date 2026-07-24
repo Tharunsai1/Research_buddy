@@ -144,6 +144,33 @@ def test_report_skips_papers_that_are_no_longer_in_the_library(search_a):
     assert "arxiv.org/abs" not in report
 
 
+def test_report_includes_notes_for_papers_in_this_search(search_a, papers):
+    notes = {"1706.03762": "Contradicts the RAG paper's framing of retrieval."}
+    report = build_field_report(search_a, papers, CARD_STATS, notes)
+    assert "## Your notes" in report
+    assert "**Attention Is All You Need**" in report
+    assert "> Contradicts the RAG paper's framing of retrieval." in report
+
+
+def test_report_omits_the_notes_section_when_there_are_none(search_a, papers):
+    assert "## Your notes" not in build_field_report(search_a, papers, CARD_STATS, {})
+    assert "## Your notes" not in build_field_report(search_a, papers, CARD_STATS, None)
+
+
+def test_report_only_shows_notes_for_papers_in_this_search(search_a, papers):
+    """A note on a paper from an unrelated search must not leak into this
+    report — notes are library-wide but the report is search-scoped."""
+    notes = {"2006.11239": "a note on a paper not in search_a"}
+    report = build_field_report(search_a, papers, CARD_STATS, notes)
+    assert "## Your notes" not in report
+
+
+def test_report_preserves_multiline_notes_as_a_blockquote(search_a, papers):
+    notes = {"1706.03762": "First line.\nSecond line."}
+    report = build_field_report(search_a, papers, CARD_STATS, notes)
+    assert "> First line.\n> Second line." in report
+
+
 def test_report_omits_sections_a_sparse_search_never_produced(papers):
     bare = {
         "id": "bare-1", "query": "q", "title": "Bare", "created_at": "2026-07-23T00:00:00",

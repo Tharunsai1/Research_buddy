@@ -21,7 +21,9 @@ S2_DIR = DATA_DIR / "s2"
 MATRIX_DIR = DATA_DIR / "matrix"
 CARDS_DIR = DATA_DIR / "cards"
 DIGEST_DIR = DATA_DIR / "digests"
+UPLOADS_DIR = DATA_DIR / "uploads"
 COLLECTION_FILE = DATA_DIR / "collection.json"
+LIBRARY_INDEX_FILE = DATA_DIR / "library_index.json"
 
 _lock = threading.Lock()
 
@@ -36,6 +38,7 @@ _EMPTY: dict[str, Any] = {
     "paper_search": {},  # id -> query of the search that first added it
     "map": {"clusters": [], "bridge_edges": []},
     "searches": [],      # [{id, query, title, created_at, paper_count}]
+    "notes": {},         # id -> the reader's own free-text note
 }
 
 
@@ -131,6 +134,59 @@ def existing_cluster_names() -> list[str]:
 def existing_map() -> dict[str, Any]:
     with _lock:
         return json.loads(json.dumps(_collection["map"]))
+
+
+def get_note(paper_id: str) -> str:
+    with _lock:
+        return _collection["notes"].get(paper_id, "")
+
+
+def set_note(paper_id: str, text: str) -> str:
+    with _lock:
+        text = text.strip()
+        if text:
+            _collection["notes"][paper_id] = text
+        else:
+            _collection["notes"].pop(paper_id, None)
+        _save_collection()
+        return text
+
+
+def all_notes() -> dict[str, str]:
+    with _lock:
+        return dict(_collection["notes"])
+
+
+def save_upload(paper_id: str, data: bytes) -> None:
+    safe = _safe(paper_id)
+    if not safe:
+        return
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    (UPLOADS_DIR / f"{safe}.pdf").write_bytes(data)
+
+
+def load_upload(paper_id: str) -> bytes | None:
+    safe = _safe(paper_id)
+    if not safe:
+        return None
+    path = UPLOADS_DIR / f"{safe}.pdf"
+    return path.read_bytes() if path.exists() else None
+
+
+def load_library_index() -> dict[str, list[float]]:
+    if not LIBRARY_INDEX_FILE.exists():
+        return {}
+    try:
+        return json.loads(LIBRARY_INDEX_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_library_index(index: dict[str, list[float]]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = LIBRARY_INDEX_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(index), encoding="utf-8")
+    tmp.replace(LIBRARY_INDEX_FILE)
 
 
 # ---------------------------------------------------------------------------
@@ -415,6 +471,7 @@ def remove_paper(paper_id: str) -> dict[str, Any]:
         _collection["papers"].pop(paper_id, None)
         _collection["extractions"].pop(paper_id, None)
         _collection["paper_search"].pop(paper_id, None)
+        _collection["notes"].pop(paper_id, None)
         _collection["read"] = [p for p in _collection["read"] if p != paper_id]
 
         clusters = [
@@ -467,6 +524,14 @@ def remove_paper(paper_id: str) -> dict[str, Any]:
             path = directory / f"{safe}.json"
             if path.exists():
                 path.unlink()
+        pdf_path = UPLOADS_DIR / f"{safe}.pdf"
+        if pdf_path.exists():
+            pdf_path.unlink()
+
+    library_index = load_library_index()
+    if paper_id in library_index:
+        del library_index[paper_id]
+        save_library_index(library_index)
 
     return {"removed": was_in_library, "searches_updated": touched_searches}
 

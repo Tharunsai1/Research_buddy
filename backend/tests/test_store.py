@@ -177,6 +177,18 @@ def test_remove_paper_deletes_the_per_paper_files(populated):
         assert not (populated.DATA_DIR / directory / "2005.11401.json").exists()
 
 
+def test_remove_paper_deletes_its_uploaded_pdf(populated):
+    """Removing an uploaded paper is the undo for a mistaken upload — the
+    stored PDF must go with it, not linger as an orphaned file forever."""
+    populated.save_upload("local-x-abc123", b"%PDF-1.4\nfake but real bytes")
+    populated._collection["papers"]["local-x-abc123"] = populated._collection["papers"][
+        "2005.11401"
+    ]
+    result = populated.remove_paper("local-x-abc123")
+    assert result["removed"] is True
+    assert populated.load_upload("local-x-abc123") is None
+
+
 def test_removing_an_unknown_paper_is_a_no_op(populated):
     result = populated.remove_paper("9999.99999")
     assert result["removed"] is False
@@ -190,6 +202,14 @@ def test_remove_paper_persists_to_disk(populated):
     assert "2005.11401" not in on_disk["papers"]
 
 
+def test_remove_paper_drops_the_stale_library_embedding(populated):
+    populated.save_library_index({"2005.11401": [0.1] * 8, "1706.03762": [0.2] * 8})
+    populated.remove_paper("2005.11401")
+    index = populated.load_library_index()
+    assert "2005.11401" not in index
+    assert "1706.03762" in index
+
+
 def test_remove_paper_handles_old_style_ids(populated):
     populated.save_deep_dive("quant-ph/9903061", {"deep_summary": "x"})
     assert populated.remove_paper("quant-ph/9903061")["removed"] is True
@@ -199,6 +219,73 @@ def test_remove_paper_handles_old_style_ids(populated):
 # ---------------------------------------------------------------------------
 # Search files
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Uploaded PDFs
+# ---------------------------------------------------------------------------
+
+def test_an_uploaded_pdf_round_trips_byte_for_byte(isolated_store):
+    data = b"%PDF-1.4\nnot a real pdf but real bytes\n%%EOF"
+    isolated_store.save_upload("local-x-abc123", data)
+    assert isolated_store.load_upload("local-x-abc123") == data
+
+
+def test_a_paper_with_no_upload_returns_none(isolated_store):
+    assert isolated_store.load_upload("local-never-uploaded-000000") is None
+
+
+def test_upload_ids_survive_the_same_slash_folding_as_arxiv_ids(isolated_store):
+    """Not expected in practice for local- ids, but the storage layer applies
+    the same _safe() convention uniformly regardless of id shape."""
+    isolated_store.save_upload("weird/id-with-slash", b"data")
+    assert isolated_store.load_upload("weird/id-with-slash") == b"data"
+
+
+def test_an_unsafe_upload_id_writes_nothing(isolated_store, tmp_path):
+    isolated_store.save_upload("../escape", b"data")
+    assert isolated_store.load_upload("../escape") is None
+    assert not list(tmp_path.rglob("*escape*"))
+
+
+# ---------------------------------------------------------------------------
+# Notes
+# ---------------------------------------------------------------------------
+
+def test_a_paper_with_no_note_returns_empty_string(isolated_store):
+    assert isolated_store.get_note("2006.11239") == ""
+
+
+def test_a_saved_note_round_trips(isolated_store):
+    saved = isolated_store.set_note("2006.11239", "  Contradicts the RAG paper's claim.  ")
+    assert saved == "Contradicts the RAG paper's claim."
+    assert isolated_store.get_note("2006.11239") == "Contradicts the RAG paper's claim."
+
+
+def test_saving_whitespace_clears_the_note_rather_than_storing_blanks(isolated_store):
+    isolated_store.set_note("2006.11239", "a real note")
+    isolated_store.set_note("2006.11239", "   ")
+    assert isolated_store.get_note("2006.11239") == ""
+    assert "2006.11239" not in isolated_store.all_notes()
+
+
+def test_notes_persist_to_disk(isolated_store):
+    isolated_store.set_note("2006.11239", "note text")
+    on_disk = json.loads(isolated_store.COLLECTION_FILE.read_text(encoding="utf-8"))
+    assert on_disk["notes"]["2006.11239"] == "note text"
+
+
+def test_all_notes_only_returns_papers_with_a_note(isolated_store):
+    isolated_store.set_note("a.1", "first")
+    isolated_store.set_note("b.1", "second")
+    assert isolated_store.all_notes() == {"a.1": "first", "b.1": "second"}
+
+
+def test_remove_paper_drops_its_note(populated):
+    populated.set_note("2005.11401", "a thought about RAG")
+    populated.remove_paper("2005.11401")
+    assert populated.get_note("2005.11401") == ""
+    assert "2005.11401" not in populated.all_notes()
+
 
 def test_search_ids_are_filename_safe(isolated_store):
     generated = isolated_store.make_search_id("Stable Diffusion / latent models!")
