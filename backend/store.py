@@ -22,8 +22,11 @@ MATRIX_DIR = DATA_DIR / "matrix"
 CARDS_DIR = DATA_DIR / "cards"
 DIGEST_DIR = DATA_DIR / "digests"
 UPLOADS_DIR = DATA_DIR / "uploads"
+RESULTS_DIR = DATA_DIR / "results"
+REVIEWS_DIR = DATA_DIR / "reviews"
 COLLECTION_FILE = DATA_DIR / "collection.json"
 LIBRARY_INDEX_FILE = DATA_DIR / "library_index.json"
+GAPS_FILE = DATA_DIR / "gaps.json"
 
 _lock = threading.Lock()
 
@@ -215,6 +218,25 @@ def load_search(search_id: str) -> dict[str, Any] | None:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def followed_searches() -> list[dict[str, Any]]:
+    """Every search the reader has opted into auto-refreshing.
+
+    Reads the search files rather than the collection metas: `followed` is
+    written by set_followed straight onto the search file, and the metas in
+    collection.json are only ever built at search-creation time. Filtering
+    the metas instead silently matched nothing, so the digest scheduler
+    could never fire — keep this the single source of truth.
+    """
+    with _lock:
+        ids = [meta["id"] for meta in _collection["searches"]]
+    out: list[dict[str, Any]] = []
+    for search_id in ids:
+        search = load_search(search_id)
+        if search is not None and search.get("followed"):
+            out.append(search)
+    return out
+
+
 # arXiv's pre-2007 ids carry a slash ("quant-ph/9903061"). A slash is a
 # directory separator on disk, so it is folded into the filename rather than
 # rejected — rejecting it silently dropped every deep dive, index, card and
@@ -378,6 +400,83 @@ def load_matrix_row(paper_id: str) -> dict[str, Any] | None:
         return None
 
 
+def save_results(paper_id: str, rows: list[dict[str, Any]]) -> None:
+    """Reported numbers for one paper. An empty list is saved, not skipped —
+    "we extracted this paper and it reports nothing" has to be distinguishable
+    from "we never looked", or the scoreboard re-extracts it on every open."""
+    if not _safe(paper_id):
+        return
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    path = RESULTS_DIR / f"{_safe(paper_id)}.json"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(rows, indent=1), encoding="utf-8")
+    tmp.replace(path)
+
+
+def load_results(paper_id: str) -> list[dict[str, Any]] | None:
+    """None when the paper has never been extracted; a list (possibly empty)
+    once it has."""
+    if not _safe(paper_id):
+        return None
+    path = RESULTS_DIR / f"{_safe(paper_id)}.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def all_results() -> dict[str, list[dict[str, Any]]]:
+    if not RESULTS_DIR.exists():
+        return {}
+    out: dict[str, list[dict[str, Any]]] = {}
+    for path in sorted(RESULTS_DIR.glob("*.json")):
+        try:
+            out[_unsafe(path.stem)] = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+    return out
+
+
+def save_review(paper_id: str, review: dict[str, Any]) -> None:
+    if not _safe(paper_id):
+        return
+    REVIEWS_DIR.mkdir(parents=True, exist_ok=True)
+    path = REVIEWS_DIR / f"{_safe(paper_id)}.json"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(review, indent=1), encoding="utf-8")
+    tmp.replace(path)
+
+
+def load_review(paper_id: str) -> dict[str, Any] | None:
+    if not _safe(paper_id):
+        return None
+    path = REVIEWS_DIR / f"{_safe(paper_id)}.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def save_gaps(report: dict[str, Any]) -> None:
+    GAPS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = GAPS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(report, indent=1), encoding="utf-8")
+    tmp.replace(GAPS_FILE)
+
+
+def load_gaps() -> dict[str, Any] | None:
+    if not GAPS_FILE.exists():
+        return None
+    try:
+        return json.loads(GAPS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
 def save_cards(paper_id: str, cards: list[dict[str, Any]]) -> None:
     if not _safe(paper_id):
         return
@@ -520,7 +619,15 @@ def remove_paper(paper_id: str) -> dict[str, Any]:
 
     safe = _safe(paper_id)
     if safe:
-        for directory in (DEEP_DIR, INDEX_DIR, S2_DIR, MATRIX_DIR, CARDS_DIR):
+        for directory in (
+            DEEP_DIR,
+            INDEX_DIR,
+            S2_DIR,
+            MATRIX_DIR,
+            CARDS_DIR,
+            RESULTS_DIR,
+            REVIEWS_DIR,
+        ):
             path = directory / f"{safe}.json"
             if path.exists():
                 path.unlink()

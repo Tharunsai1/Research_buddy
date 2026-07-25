@@ -298,3 +298,49 @@ def test_load_search_rejects_traversal(isolated_store):
 
 def test_load_search_returns_none_when_absent(isolated_store):
     assert isolated_store.load_search("never-saved") is None
+
+
+# ---------------------------------------------------------------------------
+# followed_searches — the digest scheduler's input
+# ---------------------------------------------------------------------------
+
+def test_followed_searches_sees_a_search_the_follow_endpoint_marked(
+    isolated_store, search_a
+):
+    """The regression that made scheduled digests dead on arrival.
+
+    /follow writes `followed` onto the *search file* (via save_search), but the
+    scheduler used to filter collection.json's search metas — which are built
+    once at search-creation time and never carry `followed`. The filter matched
+    nothing on every tick, so no automatic digest could ever run while the
+    feature looked correct in the UI (which reads the search file).
+    """
+    isolated_store._collection["searches"] = [{"id": search_a["id"], "paper_count": 2}]
+    isolated_store.save_search({**search_a, "followed": True})
+
+    followed = isolated_store.followed_searches()
+
+    assert [s["id"] for s in followed] == [search_a["id"]]
+    # The meta deliberately has no `followed` key — proving the lookup reads
+    # the search file and does not regress to trusting the meta.
+    assert "followed" not in isolated_store._collection["searches"][0]
+
+
+def test_followed_searches_skips_unfollowed_and_missing(isolated_store, search_a, search_b):
+    isolated_store._collection["searches"] = [
+        {"id": search_a["id"]},
+        {"id": search_b["id"]},
+        {"id": "deleted-from-disk"},
+    ]
+    isolated_store.save_search({**search_a, "followed": False})
+    isolated_store.save_search({**search_b, "followed": True})
+
+    assert [s["id"] for s in isolated_store.followed_searches()] == [search_b["id"]]
+
+
+def test_following_survives_a_reload_of_the_search(isolated_store, search_a):
+    isolated_store._collection["searches"] = [{"id": search_a["id"]}]
+    isolated_store.save_search({**search_a, "followed": True})
+
+    reloaded = isolated_store.load_search(search_a["id"])
+    assert reloaded is not None and reloaded["followed"] is True

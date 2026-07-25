@@ -78,8 +78,15 @@ async def search(
     if not index:
         return []
     query_vector = (await embed_texts([query], is_query=True))[0]
+    # Rank only over papers that still exist. Scoring the whole cached index
+    # and letting the caller drop unknown ids meant a stale entry consumed a
+    # slot in the top-N, silently returning fewer than `limit` results.
     scored = sorted(
-        ((paper_id, _cosine(query_vector, vector)) for paper_id, vector in index.items()),
+        (
+            (paper_id, _cosine(query_vector, vector))
+            for paper_id, vector in index.items()
+            if paper_id in papers
+        ),
         key=lambda pair: pair[1],
         reverse=True,
     )

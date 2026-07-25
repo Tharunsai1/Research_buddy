@@ -33,11 +33,14 @@ _STORE_DIRS = [
     "CARDS_DIR",
     "DIGEST_DIR",
     "UPLOADS_DIR",
+    "RESULTS_DIR",
+    "REVIEWS_DIR",
 ]
 _STORE_FILES = [
     "COLLECTION_FILE",
     "SETTINGS_FILE",
     "LIBRARY_INDEX_FILE",
+    "GAPS_FILE",
 ]
 
 

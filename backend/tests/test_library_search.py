@@ -136,6 +136,22 @@ async def test_an_empty_library_returns_nothing_without_calling_the_embedder(iso
     assert embedder == []
 
 
+async def test_a_stale_index_entry_does_not_eat_a_result_slot(isolated_store, embedder):
+    """A removed paper can outlive its cached vector. Ranking over the raw
+    index let that dead entry occupy a slot in the top-N, so the caller — which
+    drops ids it cannot resolve — silently returned fewer than `limit` hits."""
+    papers = {f"p.{i}": make_paper(f"p.{i}", f"Paper {i}") for i in range(3)}
+    await library_search.search("warm the index", papers, {})
+
+    index = isolated_store.load_library_index()
+    index["ghost.1"] = [0.9] * len(next(iter(index.values())))
+    isolated_store.save_library_index(index)
+
+    results = await library_search.search("paper", papers, {}, limit=3)
+    assert len(results) == 3
+    assert all(hit["paper_id"] in papers for hit in results)
+
+
 async def test_the_query_is_embedded_as_a_query_not_a_document(isolated_store, embedder):
     """nomic-embed-text expects different prefixes for queries vs documents
     (see llm.embed_texts) — mixing them up silently degrades every result."""

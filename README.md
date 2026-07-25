@@ -249,6 +249,30 @@ depends on your GPU (the pipeline makes ~11 LLM calls per search). With
   while the backend is up — there's no external cron, so a check due while
   the backend was off simply runs the next time it starts.
 
+## Evidence tools
+
+Four analyses aimed at *what a paper establishes*, not just what it says.
+
+- **Results scoreboard** — every number the selected papers report, in one
+  sortable table, including the baselines they compare against (so two papers
+  disagreeing about the same baseline becomes visible). Numbers are copied as
+  printed, never recomputed. Hyperparameters and training configuration are
+  filtered out in code, not just discouraged in the prompt — models reliably
+  return "Adam beta1 = 0.9" as a result row otherwise.
+- **Code & reproducibility** — which papers link a repo, and which report
+  seeds, hyperparameters, hardware and error bars. Pure regex over text already
+  on disk: no LLM call, no network, instant across the whole library. Shows
+  what a paper *mentions*, not a guarantee the link resolves, and distinguishes
+  a full-text scan from an abstract-only one (absence of a signal means very
+  little in the latter).
+- **Research gaps** — unexplored intersections across the library, each with a
+  concrete first experiment. Papers are referenced by list position rather than
+  arXiv id, and out-of-range references are dropped rather than trusted.
+- **Peer review** — a conference-style review with soundness / contribution /
+  presentation scores and a recommendation. Unlike the Critique tab it commits
+  to a verdict. Works from the abstract alone, with a correspondingly lower
+  confidence score, so it is never gated behind a full read.
+
 ## Architecture
 
 ```
@@ -273,6 +297,8 @@ backend/
   pdf_ingest.py    uploaded-PDF text extraction into the same Paper/FullText
                    shapes fulltext.py produces from arXiv HTML
   scheduler.py     which followed searches are due for an auto-digest
+  artifacts.py     code links + reproducibility signals (regex, no LLM)
+  insights.py      results ledger, research gaps, peer review
   store.py         JSON persistence + in-memory job registry
   models.py        pydantic schemas (also used as LLM structured outputs)
   meta_guard.py    rejects model meta-commentary ("The user wants me to…")

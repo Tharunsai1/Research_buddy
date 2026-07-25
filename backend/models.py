@@ -518,6 +518,124 @@ class ReadingNudge(BaseModel):
     blocks_titles: list[str]
 
 
+# ---------------------------------------------------------------------------
+# Quantitative results ledger
+# ---------------------------------------------------------------------------
+
+class ResultRowOut(BaseModel):
+    """One reported number, as the paper states it."""
+
+    system: str = Field(
+        description="The system/model the number belongs to, as named in the paper (e.g. 'GPT-4o', 'ours', 'ReAct baseline')."
+    )
+    is_this_paper: bool = Field(
+        description="True if this row is the paper's own proposed method, False if it is a baseline or prior work it compares against."
+    )
+    dataset: str = Field(description="Dataset or benchmark name, exactly as written (e.g. 'GSM8K', 'WebShop').")
+    metric: str = Field(
+        description=(
+            "Evaluation metric name, exactly as written (e.g. 'EM', 'accuracy', 'BLEU', "
+            "'training time'). Never a hyperparameter or training setting."
+        )
+    )
+    value: str = Field(description="The number as printed, including any unit or sign (e.g. '87.3', '87.3%', '12.4 BLEU').")
+    split: str = Field(description="Split or setting if stated (e.g. 'test', 'dev', '5-shot'). Empty string if not stated.")
+
+
+class ResultsOut(BaseModel):
+    rows: list[ResultRowOut] = Field(
+        json_schema_extra={"maxItems": 24},
+        description=(
+            "Every evaluation number the paper reports, including baselines it compares "
+            "against. Copy numbers exactly; never compute, round, or infer a value. Exclude "
+            "hyperparameters and training configuration. Return an empty list if the paper "
+            "reports no numeric evaluation results."
+        ),
+    )
+
+
+class ResultRow(ResultRowOut):
+    """A stored row, tagged with the paper it came from."""
+
+    paper_id: str
+
+
+# ---------------------------------------------------------------------------
+# Gap finder
+# ---------------------------------------------------------------------------
+
+class ResearchGapOut(BaseModel):
+    title: str = Field(description="The gap as a short, concrete title, 4-10 words.")
+    description: str = Field(
+        description="What specifically has not been done, in 2-3 sentences. Reference the papers by their numbers."
+    )
+    why_it_matters: str = Field(description="Why closing this gap would matter, 1-2 sentences.")
+    first_step: str = Field(
+        description="A concrete first experiment someone could run, one sentence. Must be doable, not a research programme."
+    )
+    paper_numbers: list[int] = Field(
+        json_schema_extra={"maxItems": 6},
+        description="Numbers of the papers from the provided list that this gap sits between.",
+    )
+
+
+class GapsOut(BaseModel):
+    gaps: list[ResearchGapOut] = Field(
+        json_schema_extra={"minItems": 3, "maxItems": 6},
+        description="3-6 genuinely unexplored intersections. Each must be specific enough to start on tomorrow.",
+    )
+
+
+class ResearchGap(BaseModel):
+    title: str
+    description: str
+    why_it_matters: str
+    first_step: str
+    paper_ids: list[str]
+    paper_titles: list[str]
+
+
+class GapReport(BaseModel):
+    gaps: list[ResearchGap]
+    paper_count: int
+    created_at: str
+
+
+# ---------------------------------------------------------------------------
+# Simulated peer review
+# ---------------------------------------------------------------------------
+
+class PeerReviewOut(BaseModel):
+    """A conference-style review. Scores follow the usual 1-5 reviewer scale."""
+
+    summary: str = Field(description="Neutral summary of what the paper claims and does, 3-4 sentences.")
+    strengths: list[str] = Field(
+        json_schema_extra={"minItems": 2, "maxItems": 5},
+        description="Concrete strengths, each one sentence. Cite specifics from the paper, not generic praise.",
+    )
+    weaknesses: list[str] = Field(
+        json_schema_extra={"minItems": 2, "maxItems": 5},
+        description="Concrete weaknesses a real reviewer would raise, each one sentence.",
+    )
+    questions: list[str] = Field(
+        json_schema_extra={"minItems": 2, "maxItems": 5},
+        description="Questions for the authors that would change your score if answered.",
+    )
+    soundness: int = Field(description="Technical soundness, 1 (poor) to 5 (excellent).")
+    contribution: int = Field(description="Significance of the contribution, 1 (poor) to 5 (excellent).")
+    presentation: int = Field(description="Clarity of presentation, 1 (poor) to 5 (excellent).")
+    recommendation: Literal[
+        "strong reject", "reject", "borderline", "accept", "strong accept"
+    ] = Field(description="Overall recommendation.")
+    confidence: int = Field(description="Your confidence in this review, 1 (educated guess) to 5 (certain).")
+
+
+class PeerReview(PeerReviewOut):
+    paper_id: str
+    from_fulltext: bool = False
+    created_at: str = ""
+
+
 class DigestHighlight(BaseModel):
     paper_id: str
     why_it_matters: str

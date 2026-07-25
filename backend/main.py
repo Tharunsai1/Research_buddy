@@ -18,7 +18,9 @@ from fastapi import FastAPI, File, HTTPException, Response, UploadFile  # noqa: 
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
+import artifacts  # noqa: E402
 import citations  # noqa: E402
+import insights  # noqa: E402
 import library_search  # noqa: E402
 import llm  # noqa: E402
 import openrouter  # noqa: E402
@@ -76,8 +78,7 @@ async def _run_due_digests() -> None:
     daily cap the model picker already warns about, and silently skips a
     tick entirely rather than partially running through the cap.
     """
-    snapshot = store.collection_snapshot()
-    followed = [meta for meta in snapshot["searches"] if meta.get("followed")]
+    followed = store.followed_searches()
     if not followed:
         return
 
@@ -88,10 +89,7 @@ async def _run_due_digests() -> None:
         _scheduler_log.info("skipping auto-digest tick: near the daily OpenRouter cap")
         return
 
-    for meta in followed:
-        search = store.load_search(meta["id"])
-        if search is None:
-            continue
+    for search in followed:
         digests = store.load_digests(search["id"])
         latest = digests[0] if digests else None
         if not scheduler.is_digest_due(search, latest):
@@ -833,6 +831,158 @@ async def build_matrix(request: PaperIdsRequest, refresh: bool = False):
     return {"rows": rows}
 
 
+# ---------------------------------------------------------------------------
+# Code / reproducibility signals — pure text scan, no LLM, no network
+# ---------------------------------------------------------------------------
+
+def _scan_text_for(paper_id: str, paper: Paper) -> tuple[str, bool]:
+    """Best text available for artifact scanning, and whether it is full text.
+
+    Prefers the chat index (real full text) over the deep dive's section
+    summaries, because a repo link usually lives in a footnote or an
+    availability statement that a summary drops.
+    """
+    chunks = store.load_index(paper_id)
+    if chunks:
+        return " ".join(c.get("text", "") for c in chunks), True
+    parts = [paper.abstract or "", paper.comment or ""]
+    deep = store.load_deep_dive(paper_id)
+    if deep:
+        parts.append(deep.get("results_detail", "") or "")
+        for section in deep.get("sections", []) or []:
+            parts.append(section.get("summary", "") or "")
+            parts.extend(section.get("key_points") or [])
+    return " ".join(p for p in parts if p), False
+
+
+@app.get("/api/library/artifacts")
+def library_artifacts():
+    """Code availability + reproducibility signals for every paper.
+
+    Free and instant (regex over text already on disk), so this is computed
+    on request rather than cached — no staleness to manage.
+    """
+    papers = _papers_by_id()
+    out = []
+    for paper_id, paper in papers.items():
+        text, full = _scan_text_for(paper_id, paper)
+        assessment = artifacts.assess(text, scanned_full_text=full)
+        out.append(
+            {
+                "paper_id": paper_id,
+                "title": paper.title,
+                "published": paper.published,
+                **assessment,
+            }
+        )
+    out.sort(key=lambda row: (not row["has_code"], -row["signal_count"], row["title"]))
+    return {"papers": out, "labels": artifacts.SIGNAL_LABELS}
+
+
+# ---------------------------------------------------------------------------
+# Results scoreboard
+# ---------------------------------------------------------------------------
+
+@app.post("/api/results")
+async def build_results(request: PaperIdsRequest, refresh: bool = False):
+    """Extract reported numbers for the given papers (cached per paper)."""
+    if not request.paper_ids:
+        raise HTTPException(400, "No papers selected.")
+    if len(request.paper_ids) > 30:
+        raise HTTPException(400, "Select 30 papers or fewer.")
+    papers = _require_papers(request.paper_ids)
+    extractions = store.all_extractions()
+
+    status = await llm.provider_status()
+    rows: list[dict] = []
+    for paper in papers:
+        cached = None if refresh else store.load_results(paper.id)
+        if cached is not None:
+            rows.extend(cached)
+            continue
+        if not status["ready"]:
+            raise HTTPException(400, status["detail"])
+        try:
+            extracted = await insights.extract_results(paper, extractions.get(paper.id))
+        except llm.LLMError as exc:
+            raise HTTPException(502, str(exc)) from exc
+        dumped = [row.model_dump() for row in extracted]
+        store.save_results(paper.id, dumped)
+        rows.extend(dumped)
+    return {"rows": rows}
+
+
+@app.get("/api/results")
+def get_results():
+    """Every already-extracted result row across the library."""
+    rows: list[dict] = []
+    for paper_rows in store.all_results().values():
+        rows.extend(paper_rows)
+    return {"rows": rows}
+
+
+# ---------------------------------------------------------------------------
+# Gap finder
+# ---------------------------------------------------------------------------
+
+@app.get("/api/library/gaps")
+def get_gaps():
+    return {"report": store.load_gaps()}
+
+
+@app.post("/api/library/gaps")
+async def build_gaps():
+    """Propose unexplored intersections across the whole library."""
+    papers = store.all_papers()
+    if len(papers) < 4:
+        raise HTTPException(400, "Collect at least 4 papers first.")
+
+    status = await llm.provider_status()
+    if not status["ready"]:
+        raise HTTPException(400, status["detail"])
+
+    snapshot = store.collection_snapshot()
+    searches = [s for s in (store.load_search(m["id"]) for m in snapshot["searches"]) if s]
+    try:
+        report = await insights.find_gaps(papers, store.all_extractions(), searches)
+    except llm.LLMError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    store.save_gaps(report.model_dump())
+    return {"report": report.model_dump()}
+
+
+# ---------------------------------------------------------------------------
+# Simulated peer review
+# ---------------------------------------------------------------------------
+
+@app.get("/api/papers/{paper_id:path}/review")
+def get_review(paper_id: str):
+    return {"review": store.load_review(paper_id)}
+
+
+@app.post("/api/papers/{paper_id:path}/review")
+async def build_review(paper_id: str, refresh: bool = False):
+    papers = _papers_by_id()
+    paper = papers.get(paper_id)
+    if paper is None:
+        raise HTTPException(404, "Paper not found.")
+
+    if not refresh:
+        cached = store.load_review(paper_id)
+        if cached is not None:
+            return {"review": cached}
+
+    status = await llm.provider_status()
+    if not status["ready"]:
+        raise HTTPException(400, status["detail"])
+    try:
+        review = await insights.review_paper(paper, store.all_extractions().get(paper_id))
+    except llm.LLMError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    store.save_review(paper_id, review.model_dump())
+    return {"review": review.model_dump()}
+
+
 @app.post("/api/matrix/csv")
 def matrix_csv(request: PaperIdsRequest):
     papers = _papers_by_id()
@@ -1120,8 +1270,27 @@ async def _build_and_save_digest(search: dict, max_new: int = 6) -> Digest:
     )
     digest = await build_digest(search, fresh, extractions, len(candidates))
 
-    # Fold the new papers into the library so the map can grow with them.
+    # Fold the new papers into the library, then actually place them on the
+    # global map. merge_search_results only records the papers — without the
+    # update below every digest silently added papers that existed in the
+    # library but appeared nowhere on the reading map, so the header count and
+    # the map disagreed. Mirrors the upload path.
     store.merge_search_results(query, fresh, extractions)
+    try:
+        global_map = await update_global_map(
+            store.all_papers(),
+            store.all_extractions(),
+            store.paper_search_map(),
+            store.existing_map(),
+            search.get("title") or query,
+        )
+        store.set_global_map(**global_map)
+    except llm.LLMError:
+        # The digest itself is already worth saving; an unplaced paper is
+        # recoverable (the next search or upload re-clusters), a lost digest
+        # is not.
+        _scheduler_log.exception("could not place new digest papers on the map")
+
     store.save_digest(search_id, digest.model_dump())
     return digest
 

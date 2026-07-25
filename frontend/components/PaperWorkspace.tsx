@@ -9,10 +9,11 @@ import type {
   DeepJob,
   Extraction,
   Paper,
+  PeerReview,
 } from "@/lib/types";
 import RichText from "./RichText";
 
-type Tab = "summary" | "explain" | "sections" | "critique" | "chat";
+type Tab = "summary" | "explain" | "sections" | "critique" | "review" | "chat";
 type Level = "undergrad" | "grad" | "expert";
 
 const TABS: { key: Tab; label: string; deepOnly: boolean }[] = [
@@ -20,8 +21,40 @@ const TABS: { key: Tab; label: string; deepOnly: boolean }[] = [
   { key: "explain", label: "Explain", deepOnly: true },
   { key: "sections", label: "Sections", deepOnly: true },
   { key: "critique", label: "Critique", deepOnly: true },
+  // Works from the abstract alone (with a lower confidence score), so unlike
+  // the other analysis tabs this one is never locked.
+  { key: "review", label: "Review", deepOnly: false },
   { key: "chat", label: "Chat", deepOnly: true },
 ];
+
+const RECOMMENDATION_STYLE: Record<string, string> = {
+  "strong accept": "border-emerald-300 bg-emerald-50 text-emerald-800",
+  accept: "border-emerald-200 bg-emerald-50 text-emerald-700",
+  borderline: "border-amber-200 bg-amber-50 text-amber-800",
+  reject: "border-red-200 bg-red-50 text-red-700",
+  "strong reject": "border-red-300 bg-red-50 text-red-800",
+};
+
+function ScoreBar({ label, score }: { label: string; score: number }) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="w-24 shrink-0 text-xs text-stone-500">{label}</span>
+      <span className="flex gap-0.5">
+        {[1, 2, 3, 4, 5].map((step) => (
+          <span
+            key={step}
+            className={
+              step <= score
+                ? "h-1.5 w-5 rounded-full bg-stone-800"
+                : "h-1.5 w-5 rounded-full bg-stone-200"
+            }
+          />
+        ))}
+      </span>
+      <span className="font-mono text-xs text-stone-500">{score}/5</span>
+    </div>
+  );
+}
 
 const LEVELS: { key: Level; label: string; hint: string }[] = [
   { key: "undergrad", label: "Beginner", hint: "No jargon, plain analogy" },
@@ -117,6 +150,8 @@ export default function PaperWorkspace({
   const [noteSaved, setNoteSaved] = useState("");
   const [noteLoaded, setNoteLoaded] = useState(false);
   const [noteSaving, setNoteSaving] = useState(false);
+  const [review, setReview] = useState<PeerReview | null>(null);
+  const [reviewBusy, setReviewBusy] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const noteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const noteRef = useRef({ text: "", saved: "" });
@@ -142,6 +177,35 @@ export default function PaperWorkspace({
       .then(setDeep)
       .catch(() => setDeep(null));
   }, [paper.id, hasDeep]);
+
+  // Load any saved review when the paper changes. Generating one is always an
+  // explicit click — it costs an LLM call.
+  useEffect(() => {
+    let cancelled = false;
+    setReview(null);
+    api
+      .review(paper.id)
+      .then((result) => {
+        if (!cancelled) setReview(result.review);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [paper.id]);
+
+  const runReview = async (refresh = false) => {
+    setReviewBusy(true);
+    setError(null);
+    try {
+      const result = await api.buildReview(paper.id, refresh);
+      setReview(result.review);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setReviewBusy(false);
+    }
+  };
 
   // Highlight-and-ask: a document-level listener (not one scoped to the
   // content div) so the floating button also disappears when the reader
@@ -504,6 +568,8 @@ export default function PaperWorkspace({
                 explain: explainReady,
                 sections: sectionsReady,
                 critique: critiqueReady,
+                // Reviewable from the abstract alone, so never gated.
+                review: true,
                 // Chat needs the passage index, built only after the full
                 // read finishes — no partial version of that is meaningful.
                 chat: Boolean(deep),
@@ -853,6 +919,123 @@ export default function PaperWorkspace({
                   ))}
                 </ol>
               </div>
+            </div>
+          ) : null}
+
+          {/* Review tab */}
+          {tab === "review" ? (
+            <div className="space-y-4">
+              <p className="text-sm leading-relaxed text-stone-500">
+                A conference-style review with scores — harsher and more committal than
+                the Critique tab, which only lists concerns. Useful for pressure-testing
+                a paper, or your own draft.
+              </p>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={() => runReview(Boolean(review))}
+                  disabled={reviewBusy}
+                  className="rounded-lg bg-stone-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-stone-700 disabled:opacity-40"
+                >
+                  {review ? "Write a fresh review" : "Review this paper"}
+                </button>
+                {reviewBusy ? (
+                  <span className="flex items-center gap-2 text-sm text-stone-500">
+                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-stone-200 border-t-stone-500" />
+                    Reviewing…
+                  </span>
+                ) : null}
+                {review && !reviewBusy ? (
+                  <span className="text-xs text-stone-400">
+                    {review.from_fulltext ? "from the full text" : "from the abstract only"}
+                    {review.created_at ? ` · ${review.created_at.slice(0, 10)}` : ""}
+                  </span>
+                ) : null}
+              </div>
+
+              {review ? (
+                <>
+                  <div className="rounded-xl border border-stone-200 bg-white p-5">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <span
+                        className={`rounded-full border px-3 py-1 text-sm font-semibold capitalize ${
+                          RECOMMENDATION_STYLE[review.recommendation] ??
+                          "border-stone-200 bg-stone-50 text-stone-700"
+                        }`}
+                      >
+                        {review.recommendation}
+                      </span>
+                      <span className="text-xs text-stone-400">
+                        reviewer confidence {review.confidence}/5
+                      </span>
+                    </div>
+                    <div className="mt-4 space-y-1.5">
+                      <ScoreBar label="Soundness" score={review.soundness} />
+                      <ScoreBar label="Contribution" score={review.contribution} />
+                      <ScoreBar label="Presentation" score={review.presentation} />
+                    </div>
+                    <p className="mt-4 border-t border-stone-100 pt-3 text-sm leading-relaxed text-stone-700">
+                      <RichText text={review.summary} terms={terms} />
+                    </p>
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-4">
+                      <p className="text-sm font-semibold text-emerald-900">Strengths</p>
+                      <ul className="mt-2 space-y-1.5">
+                        {review.strengths.map((item, index) => (
+                          <li
+                            key={index}
+                            className="flex gap-2 text-sm leading-relaxed text-emerald-900/90"
+                          >
+                            <span className="text-emerald-400">+</span>
+                            <span>
+                              <RichText text={item} terms={terms} />
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                    <div className="rounded-xl border border-red-200 bg-red-50/50 p-4">
+                      <p className="text-sm font-semibold text-red-900">Weaknesses</p>
+                      <ul className="mt-2 space-y-1.5">
+                        {review.weaknesses.map((item, index) => (
+                          <li
+                            key={index}
+                            className="flex gap-2 text-sm leading-relaxed text-red-900/90"
+                          >
+                            <span className="text-red-400">−</span>
+                            <span>
+                              <RichText text={item} terms={terms} />
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-stone-200 bg-white p-4">
+                    <p className="text-sm font-semibold text-stone-900">
+                      Questions for the authors
+                    </p>
+                    <ol className="mt-2 space-y-2">
+                      {review.questions.map((item, index) => (
+                        <li
+                          key={index}
+                          className="flex gap-3 text-sm leading-relaxed text-stone-600"
+                        >
+                          <span className="font-mono text-xs font-semibold text-stone-300">
+                            Q{index + 1}
+                          </span>
+                          <span>
+                            <RichText text={item} terms={terms} />
+                          </span>
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+                </>
+              ) : null}
             </div>
           ) : null}
 

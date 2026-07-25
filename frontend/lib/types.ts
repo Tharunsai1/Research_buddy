@@ -397,3 +397,62 @@ export interface EnginesResponse {
   engines: Engine[];
   openrouter_usage?: OpenRouterUsage;
 }
+
+/** Code availability + reproducibility signals (regex over the paper's text). */
+export interface PaperArtifacts {
+  paper_id: string;
+  title: string;
+  published: string;
+  repos: string[];
+  has_code: boolean;
+  signals: Record<string, boolean>;
+  signal_count: number;
+  signal_total: number;
+  scanned_full_text: boolean;
+}
+
+export interface ArtifactsResponse {
+  papers: PaperArtifacts[];
+  labels: Record<string, string>;
+}
+
+/** One reported evaluation number. */
+export interface ResultRow {
+  paper_id: string;
+  system: string;
+  is_this_paper: boolean;
+  dataset: string;
+  metric: string;
+  value: string;
+  split: string;
+}
+
+export interface ResearchGap {
+  title: string;
+  description: string;
+  why_it_matters: string;
+  first_step: string;
+  paper_ids: string[];
+  paper_titles: string[];
+}
+
+export interface GapReport {
+  gaps: ResearchGap[];
+  paper_count: number;
+  created_at: string;
+}
+
+export interface PeerReview {
+  paper_id: string;
+  summary: string;
+  strengths: string[];
+  weaknesses: string[];
+  questions: string[];
+  soundness: number;
+  contribution: number;
+  presentation: number;
+  recommendation: string;
+  confidence: number;
+  from_fulltext: boolean;
+  created_at: string;
+}

@@ -1,5 +1,6 @@
 import type {
   AppState,
+  ArtifactsResponse,
   CardsResponse,
   EnginesResponse,
   ChatAnswer,
@@ -8,14 +9,17 @@ import type {
   DeepJob,
   Digest,
   Flashcard,
+  GapReport,
   GradeResult,
   Health,
   Job,
   LibrarySearchResult,
   MatrixRow,
+  PeerReview,
   ReadingNudge,
   Prerequisite,
   RelatedWork,
+  ResultRow,
   SearchDetail,
   SearchDiff,
 } from "./types";
@@ -168,6 +172,23 @@ export const api = {
     ),
   readingNudges: (search_id: string) =>
     request<{ nudges: ReadingNudge[] }>(`/api/searches/${search_id}/reading-nudges`),
+  artifacts: () => request<ArtifactsResponse>(`/api/library/artifacts`),
+  buildResults: (paper_ids: string[], refresh = false) =>
+    request<{ rows: ResultRow[] }>(`/api/results${refresh ? "?refresh=true" : ""}`, {
+      method: "POST",
+      body: JSON.stringify({ paper_ids }),
+    }),
+  results: () => request<{ rows: ResultRow[] }>(`/api/results`),
+  gaps: () => request<{ report: GapReport | null }>(`/api/library/gaps`),
+  buildGaps: () =>
+    request<{ report: GapReport }>(`/api/library/gaps`, { method: "POST" }),
+  review: (paper_id: string) =>
+    request<{ review: PeerReview | null }>(`/api/papers/${paper_id}/review`),
+  buildReview: (paper_id: string, refresh = false) =>
+    request<{ review: PeerReview }>(
+      `/api/papers/${paper_id}/review${refresh ? "?refresh=true" : ""}`,
+      { method: "POST" },
+    ),
   uploadPdf: async (
     file: File,
   ): Promise<{ added: boolean; paper_id?: string; title?: string; reason?: string; word_count?: number }> => {

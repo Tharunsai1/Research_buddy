@@ -11,6 +11,7 @@ import re
 import unicodedata
 from datetime import date
 
+import artifacts
 import store
 from llm import parse_json
 from models import (
@@ -22,11 +23,6 @@ from models import (
     RelatedWork,
     RelatedWorkOut,
     RelatedWorkParagraph,
-)
-
-_CODE_URL = re.compile(
-    r"https?://(?:www\.)?(?:github\.com|gitlab\.com|huggingface\.co|bitbucket\.org)/[\w.\-/#]+",
-    re.I,
 )
 
 _STOPWORDS = {
@@ -64,6 +60,13 @@ def _paper_context(paper: Paper, extraction: Extraction | None) -> tuple[str, bo
 
 
 def _find_code_url(paper: Paper) -> str | None:
+    """First repo link the paper mentions, or None.
+
+    Delegates to artifacts.find_repo_links rather than keeping a second regex:
+    the local one required an explicit https:// scheme and so missed the very
+    common bare "code at github.com/org/repo" phrasing, silently downgrading
+    those papers to the model's guess about code availability.
+    """
     haystack = " ".join(filter(None, [paper.abstract, paper.comment or ""]))
     deep = store.load_deep_dive(paper.id)
     if deep:
@@ -71,8 +74,8 @@ def _find_code_url(paper: Paper) -> str | None:
             section.get("summary", "") + " " + " ".join(section.get("key_points") or [])
             for section in deep.get("sections", [])
         )
-    match = _CODE_URL.search(haystack)
-    return match.group(0).rstrip(".,);") if match else None
+    links = artifacts.find_repo_links(haystack)
+    return links[0] if links else None
 
 
 # ---------------------------------------------------------------------------

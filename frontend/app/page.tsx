@@ -15,6 +15,9 @@ import ModelPicker from "@/components/ModelPicker";
 import Prerequisites from "@/components/Prerequisites";
 import ReadingMap from "@/components/ReadingMap";
 import ResearchToolkit from "@/components/ResearchToolkit";
+import ResultsBoard from "@/components/ResultsBoard";
+import CodeAvailability from "@/components/CodeAvailability";
+import ResearchGaps from "@/components/ResearchGaps";
 import StudyDeck from "@/components/StudyDeck";
 import RelationshipsGraph from "@/components/RelationshipsGraph";
 import Timeline from "@/components/Timeline";
@@ -596,6 +599,26 @@ export default function Home() {
               papers={app.papers}
               topic={search.title || search.query}
             />
+          </section>
+
+          <section className="space-y-3">
+            <SectionTitle icon="▦">Results scoreboard</SectionTitle>
+            <ResultsBoard
+              key={`results-${search.id}`}
+              paperIds={search.paper_ids}
+              papers={app.papers}
+              onSelect={setSelected}
+            />
+          </section>
+
+          <section className="space-y-3">
+            <SectionTitle icon="⌨">Code &amp; reproducibility</SectionTitle>
+            <CodeAvailability onSelect={setSelected} />
+          </section>
+
+          <section className="space-y-3">
+            <SectionTitle icon="✦">Research gaps</SectionTitle>
+            <ResearchGaps onSelect={setSelected} />
           </section>
 
           <section className="space-y-3">
