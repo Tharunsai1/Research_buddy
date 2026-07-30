@@ -344,3 +344,90 @@ def test_following_survives_a_reload_of_the_search(isolated_store, search_a):
 
     reloaded = isolated_store.load_search(search_a["id"])
     assert reloaded is not None and reloaded["followed"] is True
+
+
+# ---------------------------------------------------------------------------
+# _write_atomic — concurrent writers
+# ---------------------------------------------------------------------------
+
+def test_concurrent_writers_to_one_file_do_not_crash(isolated_store):
+    """Background warm-up reads and scheduled digests run alongside whatever
+    the reader is doing, so two writers can land on the same paper. On Windows
+    that used to raise PermissionError from os.replace and abort the save,
+    leaving the real file stale."""
+    import threading
+
+    errors: list[Exception] = []
+
+    def writer(n: int) -> None:
+        try:
+            for _ in range(40):
+                isolated_store.save_cards("2605.04956", [{"writer": n}])
+        except Exception as exc:  # noqa: BLE001 - the point is to catch any
+            errors.append(exc)
+
+    threads = [threading.Thread(target=writer, args=(i,)) for i in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    cards = isolated_store.load_cards("2605.04956")
+    assert len(cards) == 1, "a torn write would leave truncated or invalid JSON"
+
+
+def test_a_failed_write_leaves_no_temp_file_behind(isolated_store):
+    """Temp files are skipped by every glob in the module, but they should not
+    accumulate either."""
+    isolated_store.save_cards("2605.04956", [{"q": "a", "a": "b"}])
+    strays = list(isolated_store.CARDS_DIR.glob("*.tmp"))
+    assert strays == []
+
+
+# ---------------------------------------------------------------------------
+# Highlights
+# ---------------------------------------------------------------------------
+
+def _mark(paper_id="2106.06097", quote="attention is all you need",
+          created_at="2026-07-27T10:00:00", hid="h_1"):
+    return {"id": hid, "paper_id": paper_id, "tab": "summary",
+            "quote": quote, "prefix": "", "suffix": "", "note": "",
+            "created_at": created_at}
+
+
+def test_highlights_round_trip(isolated_store):
+    isolated_store.save_highlights("2106.06097", [_mark()])
+    assert isolated_store.load_highlights("2106.06097")[0]["quote"] == "attention is all you need"
+
+
+def test_a_paper_with_no_highlights_reads_as_empty(isolated_store):
+    assert isolated_store.load_highlights("2106.06097") == []
+
+
+def test_all_highlights_spans_papers_newest_first(isolated_store):
+    isolated_store.save_highlights("a.1", [_mark("a.1", "older", created_at="2026-07-01T00:00:00", hid="h_a")])
+    isolated_store.save_highlights("b.2", [_mark("b.2", "newer", created_at="2026-07-20T00:00:00", hid="h_b")])
+    assert [h["quote"] for h in isolated_store.all_highlights()] == ["newer", "older"]
+
+
+def test_one_unreadable_file_does_not_empty_the_library_view(isolated_store):
+    """A corrupt file should cost its own highlights, not everyone else's."""
+    isolated_store.save_highlights("a.1", [_mark("a.1", "kept")])
+    isolated_store.HIGHLIGHTS_DIR.mkdir(parents=True, exist_ok=True)
+    (isolated_store.HIGHLIGHTS_DIR / "broken.json").write_text("{not json", encoding="utf-8")
+    assert [h["quote"] for h in isolated_store.all_highlights()] == ["kept"]
+
+
+def test_removing_a_paper_removes_its_highlights(isolated_store):
+    """Highlights quote the paper's own text; leaving them behind would strand
+    passages pointing at something no longer in the library."""
+    from tests.conftest import make_paper
+
+    paper = make_paper("2106.06097", "Neural Optimization Kernel")
+    isolated_store.merge_search_results("kernels", [paper], {})
+    isolated_store.save_highlights("2106.06097", [_mark()])
+
+    isolated_store.remove_paper("2106.06097")
+
+    assert isolated_store.load_highlights("2106.06097") == []

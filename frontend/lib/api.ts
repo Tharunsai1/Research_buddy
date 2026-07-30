@@ -12,10 +12,12 @@ import type {
   GapReport,
   GradeResult,
   Health,
+  Highlight,
   Job,
   LibrarySearchResult,
   MatrixRow,
   PeerReview,
+  PrefetchState,
   ReadingNudge,
   Prerequisite,
   RelatedWork,
@@ -24,8 +26,15 @@ import type {
   SearchDiff,
 } from "./types";
 
-export const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8321";
+/** Empty by default: next.config.ts rewrites `/api/*` to the backend, so a
+ *  relative URL resolves against whichever host served the page. That is what
+ *  lets the same build work on this machine and from an iPad on the network —
+ *  a baked-in address would be wrong on one of them. Set
+ *  NEXT_PUBLIC_API_BASE only to point at a backend somewhere else entirely. */
+export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "";
+
+/** For error messages, where "" would read as a missing address. */
+const API_LABEL = API_BASE || "/api on this server";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
@@ -35,7 +44,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       headers: { "Content-Type": "application/json", ...init?.headers },
     });
   } catch {
-    throw new Error(`Backend not reachable at ${API_BASE}. Is uvicorn running?`);
+    throw new Error(`Backend not reachable at ${API_LABEL}. Is uvicorn running?`);
   }
   if (!response.ok) {
     let detail = `Request failed (${response.status})`;
@@ -79,6 +88,31 @@ export const api = {
   runningDeepJob: (paper_id: string) =>
     request<DeepJob | { job_id: null }>(`/api/papers/${paper_id}/deepjob`),
   deepDive: (paper_id: string) => request<DeepDive>(`/api/papers/${paper_id}/deep`),
+  /** Advisory: tells the backend where the reader is so it can warm the deep
+   *  reads they are most likely to open next. Returns immediately. */
+  prefetch: (reading_order: string[], after_paper_id: string | null = null) =>
+    request<PrefetchState>("/api/prefetch", {
+      method: "POST",
+      body: JSON.stringify({ reading_order, after_paper_id }),
+    }),
+  prefetchState: () => request<PrefetchState>("/api/prefetch"),
+
+  highlights: (paper_id: string) =>
+    request<{ highlights: Highlight[] }>(`/api/papers/${paper_id}/highlights`),
+  allHighlights: () => request<{ highlights: Highlight[] }>("/api/highlights"),
+  addHighlight: (
+    paper_id: string,
+    body: { tab: string; quote: string; prefix: string; suffix: string; note?: string },
+  ) =>
+    request<Highlight>(`/api/papers/${paper_id}/highlights`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  removeHighlight: (paper_id: string, highlight_id: string) =>
+    request<{ removed: string }>(
+      `/api/papers/${paper_id}/highlights/${highlight_id}`,
+      { method: "DELETE" },
+    ),
   enrich: (refresh = false) =>
     request<{ fetched: number; total: number; missing?: string[] }>(
       `/api/enrich?refresh=${refresh}`,
@@ -201,7 +235,7 @@ export const api = {
       // default) would break the upload.
       response = await fetch(`${API_BASE}/api/papers/upload`, { method: "POST", body: formData });
     } catch {
-      throw new Error(`Backend not reachable at ${API_BASE}. Is uvicorn running?`);
+      throw new Error(`Backend not reachable at ${API_LABEL}. Is uvicorn running?`);
     }
     if (!response.ok) {
       let detail = `Upload failed (${response.status})`;

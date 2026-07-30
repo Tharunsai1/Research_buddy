@@ -196,6 +196,40 @@ override with `NEXT_PUBLIC_API_BASE` in `frontend/.env.local` if you move it.
 If you run the frontend on a port other than 3000, nothing else changes (the
 backend accepts any localhost origin).
 
+### Using it from an iPad (or any other device on the network)
+
+Next serves the API from its own origin and forwards `/api/*` to the backend
+(see `next.config.ts`), so there is no API address to configure and no CORS to
+widen — a relative `/api/…` resolves against whatever host served the page.
+Two consequences worth knowing:
+
+* **Only port 3000 is exposed.** The backend stays bound to `127.0.0.1`, so
+  nothing on the network can reach it directly; every request arrives through
+  Next, on the machine running it.
+* **Open `http://<this-machine's-LAN-IP>:3000`** on the tablet. Find the IP
+  with `(Get-NetIPAddress -AddressFamily IPv4 | Where-Object InterfaceAlias -eq 'Wi-Fi').IPAddress`.
+  If it is handed out by DHCP it can change; reserve it in the router to make
+  the address stable.
+
+Windows blocks the inbound connection until you allow it. From an **elevated**
+PowerShell, once:
+
+```powershell
+New-NetFirewallRule -DisplayName "Research Copilot (LAN)" -Direction Inbound `
+  -Protocol TCP -LocalPort 3000 -Action Allow -Profile Private
+```
+
+`-Profile Private` is deliberate: the rule applies on networks marked private
+(home) and not on public ones (cafés, campus, hotels).
+
+**There is no authentication.** Anyone who can reach port 3000 can read and
+change the whole library and spend the day's model budget. That is fine on a
+home network and not fine on a shared one — keep the firewall rule scoped to
+private networks, and stop the frontend when on public Wi-Fi.
+
+The app is also a home-screen app on iPadOS: Share → Add to Home Screen opens
+it without Safari's toolbars.
+
 Open the app, type any ML topic in plain English, and watch the four-stage
 pipeline run: **Query arXiv → Rank by relevance → Generate summaries → Map
 research landscape**. With the default local model a search is free; speed
@@ -297,6 +331,7 @@ backend/
   pdf_ingest.py    uploaded-PDF text extraction into the same Paper/FullText
                    shapes fulltext.py produces from arXiv HTML
   scheduler.py     which followed searches are due for an auto-digest
+  prefetch.py      which papers to warm ahead of the reader, and when not to
   artifacts.py     code links + reproducibility signals (regex, no LLM)
   insights.py      results ledger, research gaps, peer review
   store.py         JSON persistence + in-memory job registry
@@ -319,10 +354,64 @@ frontend/
   components/UploadPdf.tsx        add a paper that isn't on arXiv
   components/…                    pipeline card, clusters, relationships graph,
                                   tensions, consensus, open problems, reading order
+  lib/penSelection.ts             Apple Pencil drag-to-select
+  lib/anchoring.ts                re-finding a marked passage after re-render
+  lib/highlightPaint.ts           painting highlights without touching the DOM
 ```
 
+### Highlighting
+
+Select a passage — mouse, finger, or Pencil — and the toolbar offers
+**Highlight** alongside **Ask about this**. Marks are saved per paper and
+per tab, and reappear on the text when you come back.
+
+Two details make it work rather than merely appear to:
+
+* **Anchors are text, not positions.** A highlight stores its quote plus about
+  forty characters either side, and is re-found by searching for that. Storing
+  "paragraph 3, characters 40–90" breaks the moment anything above it changes,
+  and breaks *silently* — the mark still lands somewhere, just on the wrong
+  words. The surrounding context only breaks ties when a phrase repeats. If
+  the text genuinely changed, the highlight is listed as "text has changed"
+  instead of pointing somewhere the reader never marked.
+* **Panels that quote highlights are excluded from the search** via
+  `data-no-anchor` (see `NO_ANCHOR_ATTR`). The list of saved highlights sits
+  inside the region being searched, so without this every anchor matches its
+  own entry in the sidebar rather than the passage in the paper.
+
+Painting uses the CSS Custom Highlight API, which colours ranges without
+touching the DOM — the reading pane is React-rendered, and wrapping matches in
+`<mark>` means mutating a tree React will overwrite. Where the API is missing
+(iPadOS before 17.2) highlights stop being *shaded*; they are still saved,
+listed and openable.
+
 A deep read makes ~11 LLM calls and takes roughly 90 seconds per paper on
-`qwen3:8b`; results are cached to disk, so reopening a paper is instant. Papers
+`qwen3:8b`; results are cached to disk, so reopening a paper is instant.
+
+Most of that wait is avoidable, so the backend warms reads ahead of you
+(`prefetch.py` decides what, `main.py` runs it). When results land it starts
+reading the top paper; when you open a paper it starts on the two after it, in
+the order the Papers list shows. Open one mid-warm-up and the workspace picks
+up the run already in progress rather than starting over. The Papers list
+marks whichever paper is being read ahead and which are waiting behind it, so
+the work is visible without opening anything; the list polls `GET /api/prefetch`
+for that, since nothing else would tell it when a background read starts or
+finishes.
+
+Three rules keep that from backfiring. It warms **one paper at a time and never
+alongside a read already running** — a deep read is already several concurrent
+calls, so a second one would slow down the paper you are actually looking at.
+The look-ahead is **bounded at two** (`prefetch.LOOK_AHEAD`), because warming a
+30-paper search end to end would spend most of a day's cap on papers you never
+open. And it **stops near the daily cap or on an engine that isn't ready**: a
+speculative read must never be the call that spends the budget your own
+explicit reads need. A paper that fails — usually one arXiv has no HTML for —
+is remembered and not retried, since a queue that keeps handing back the same
+unreadable paper never drains. Warming decisions are logged under
+`research-copilot.prefetch`; it is the only trace this leaves, since none of it
+is a request you can watch.
+
+Papers
 that are PDF-only on arXiv (mostly pre-2023) have no HTML full text — the tool
 says so and keeps the abstract-level summary. It refuses rather than reading
 whatever arXiv served: for those papers `arxiv.org/html/{id}` answers 200 and

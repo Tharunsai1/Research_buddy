@@ -714,3 +714,30 @@ class DeepJob(BaseModel):
 
     def stage(self, key: str) -> StageState:
         return next(s for s in self.stages if s.key == key)
+
+
+# ---------------------------------------------------------------------------
+# Highlights
+# ---------------------------------------------------------------------------
+
+class HighlightIn(BaseModel):
+    """What the browser sends when a passage is marked.
+
+    The anchor is deliberately the quoted text plus a little of what surrounds
+    it, not a DOM path or a character offset: the rendered tree changes
+    whenever a tab re-renders or a deep dive is regenerated, and an anchor
+    that depends on it silently points somewhere wrong. Prefix and suffix are
+    only needed to disambiguate a phrase that appears more than once.
+    """
+
+    tab: str = Field(description="Which view the passage was marked in.")
+    quote: str
+    prefix: str = ""
+    suffix: str = ""
+    note: str = ""
+
+
+class Highlight(HighlightIn):
+    id: str
+    paper_id: str
+    created_at: str

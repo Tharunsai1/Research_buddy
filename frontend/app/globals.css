@@ -10,8 +10,106 @@ body {
   color: #1c1917;
 }
 
+/* ---------------------------------------------------------------------------
+   Two targets: a 16" laptop and a 13" iPad Air.
+
+   Width cannot tell them apart. An iPad Air 13 in landscape reports a 1366px
+   viewport — wider than the app's window on the laptop — so any breakpoint
+   that catches the tablet catches the laptop too. What actually differs is the
+   input device: `pointer: coarse` is true for a finger or a Pencil and false
+   for a mouse. Control sizing therefore keys off the pointer, while layout
+   width keys off ordinary breakpoints. The two are independent, which is why
+   they are separated here rather than bundled into one "tablet" breakpoint.
+
+   `data-pointer` on <html> overrides the detection. That makes the touch
+   layout testable in a desktop browser, where no media query will ever report
+   a coarse pointer, and lets either mode be forced deliberately.
+   --------------------------------------------------------------------------- */
+
+:root {
+  /* Mouse defaults, deliberately inert: a 24px pill is easy to click, and
+     1rem matches the checkbox size the markup already asks for, so none of
+     the rules below change anything on the laptop. */
+  --tap-min: 0px;
+  --tap-box: 1rem;
+}
+
+@media (pointer: coarse) {
+  :root {
+    --tap-min: 44px; /* Apple's minimum for anything you tap */
+    --tap-box: 1.375rem;
+  }
+}
+
+:root[data-pointer="coarse"] {
+  --tap-min: 44px;
+  --tap-box: 1.375rem;
+}
+
+:root[data-pointer="fine"] {
+  --tap-min: 0px;
+  --tap-box: 1rem;
+}
+
+/* The `:root` prefix is load-bearing: a bare element selector loses to the
+   utility classes already on these controls, so the rule would be silently
+   dropped exactly where it is needed.
+
+   Both selectors are kept at element-level specificity on purpose. Adding
+   `[role="button"]` to the `:is()` list raises the whole rule to class-level,
+   because `:is()` takes the specificity of its most specific argument — and
+   the exception below then loses the cascade and silently does nothing.
+   Nothing in this app uses `role="button"`, so the list stays element-only
+   and the two rules order themselves correctly: (0,1,1) then (0,1,2). */
+:root :is(button, select, summary) {
+  min-height: var(--tap-min);
+}
+
+/* Controls sitting inside a sentence keep their natural height. Glossary
+   terms are inline buttons mid-paragraph, and a 44px floor on those pushes
+   the lines apart and wrecks the reading column. */
+:root :is(p, h1, h2, h3, h4) :is(button, a) {
+  min-height: 0;
+}
+
+:root :is(input[type="checkbox"], input[type="radio"]) {
+  width: var(--tap-box);
+  height: var(--tap-box);
+}
+
+/* Below 16px, iOS zooms the page in when a field takes focus and does not
+   zoom back out — the most jarring thing about using a desktop-sized form on
+   an iPad. Scoped to coarse pointers so the laptop keeps its smaller fields. */
+@media (pointer: coarse) {
+  :root :is(input, textarea, select) {
+    font-size: 1rem;
+  }
+}
+
+:root[data-pointer="coarse"] :is(input, textarea, select) {
+  font-size: 1rem;
+}
+
+/* Stop iOS inflating body text when the iPad is turned to landscape. */
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
 ::selection {
   background: #dbeafe;
+}
+
+/* Saved highlights, painted by lib/highlightPaint.ts through the CSS Custom
+   Highlight API. Only background and colour are honoured on ::highlight —
+   borders and padding are ignored by design, since the pseudo-element covers
+   a text range rather than a box. */
+::highlight(rc-highlight) {
+  background-color: #fef08a;
+}
+
+/* The flash shown when a note's link jumps back to its source. */
+::highlight(rc-highlight-flash) {
+  background-color: #fdba74;
 }
 
 @keyframes pulse-dot {

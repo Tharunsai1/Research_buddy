@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, downloadFile } from "@/lib/api";
-import type { AppState, Health, Job, SearchDetail } from "@/lib/types";
+import type { AppState, Health, Job, PrefetchState, SearchDetail } from "@/lib/types";
 import PipelineCard from "@/components/PipelineCard";
 import LibrarySearch from "@/components/LibrarySearch";
 import UploadPdf from "@/components/UploadPdf";
@@ -53,8 +53,11 @@ export default function Home() {
   const [scope, setScope] = useState<"search" | "all">("search");
   const [enriching, setEnriching] = useState(false);
   const [exportingReport, setExportingReport] = useState(false);
+  const [prefetchState, setPrefetchState] = useState<PrefetchState>({
+    warming: null,
+    queued: [],
+  });
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const prefetchedRef = useRef<Set<string>>(new Set());
 
   const refresh = useCallback(async (searchId?: string | null) => {
     const state = await api.state();
@@ -167,46 +170,47 @@ export default function Home() {
     };
   }, [app, search, scope]);
 
-  // Deep dive is the slow part (~90s-4min). Once the paper the reader is on
-  // finishes its own deep read, quietly start the next paper in that search's
-  // reading order in the background, so it's already done by the time they
-  // click it. Best-effort: errors are swallowed and a paper is only ever
-  // queued once per session.
-  const prefetchNextInOrder = useCallback(
-    (afterPaperId: string) => {
-      if (!search || !app) return;
-      const order = search.reading_order;
-      const index = order.findIndex((step) => step.paper_id === afterPaperId);
-      if (index === -1 || index + 1 >= order.length) return;
-      const nextId = order[index + 1].paper_id;
-      if (
-        prefetchedRef.current.has(nextId) ||
-        (app.deep_read ?? []).includes(nextId) ||
-        !app.papers[nextId]
-      ) {
-        return;
-      }
-      prefetchedRef.current.add(nextId);
+  // Reading a paper in depth is the slow part (~90s-4min), and making the
+  // reader watch it after they click is most of the wait. Instead, tell the
+  // backend where they are and let it warm what they are likely to open next:
+  // the first paper as soon as results land, then the ones after whichever
+  // paper they open. The queue, the look-ahead and the "never compete with a
+  // read in progress" rule all live in prefetch.py — this is only a hint, so
+  // failures are swallowed.
+  const warm = useCallback(
+    (afterPaperId: string | null) => {
+      if (!search) return;
+      // paper_ids, not reading_order: the Papers list is numbered off
+      // paper_ids (see numberOf), so this is the order the reader actually
+      // sees and clicks through. reading_order is the pedagogical
+      // oldest-first path, which would warm a paper nowhere near the one
+      // they are looking at.
       api
-        .runningDeepJob(nextId)
-        .then((running) => {
-          if ("id" in running && running.status === "running") return; // already in flight
-          return api.startDeepDive(nextId);
-        })
-        .catch(() => {
-          prefetchedRef.current.delete(nextId); // let a later trigger retry
-        });
+        .prefetch(search.paper_ids, afterPaperId)
+        .then(setPrefetchState)
+        .catch(() => {});
     },
-    [search, app],
+    [search],
   );
 
-  // Covers re-opening a paper that was already deep-read in an earlier
-  // session — onDeepDone won't fire again, so this is the only trigger.
+  // Fires on results landing (nothing open yet -> warm the first paper) and
+  // on every paper the reader opens (-> warm what follows it). Re-queuing an
+  // already-warmed paper is a no-op server-side, so this needs no guard.
   useEffect(() => {
-    if (selected && (app?.deep_read ?? []).includes(selected)) {
-      prefetchNextInOrder(selected);
-    }
-  }, [selected, app?.deep_read, prefetchNextInOrder]);
+    warm(selected);
+  }, [selected, warm]);
+
+  // Keeps the "reading ahead" / "queued" badges honest. Warming happens
+  // entirely in the background, so nothing else would tell the list when a
+  // paper starts or finishes. Polls only while results are on screen, and the
+  // endpoint touches neither disk nor model.
+  useEffect(() => {
+    if (view !== "results") return;
+    const id = setInterval(() => {
+      api.prefetchState().then(setPrefetchState).catch(() => {});
+    }, 4000);
+    return () => clearInterval(id);
+  }, [view]);
 
   const enrich = async () => {
     setEnriching(true);
@@ -229,8 +233,13 @@ export default function Home() {
     setSelected(paperId);
   };
 
+  // Three widths, one per target: 1024 up to an iPad in portrait, 1152 on an
+  // iPad in landscape (xl, 1280+ — the tablet lands here at 1366), and 1280 on
+  // the laptop (2xl, 1536+). Text blocks inside cap their own line length, so
+  // the extra room widens the map and the cards rather than stretching prose
+  // into unreadable lines.
   return (
-    <div className="mx-auto max-w-5xl px-4 pb-24 sm:px-6">
+    <div className="mx-auto max-w-5xl px-4 pb-24 sm:px-6 xl:max-w-6xl 2xl:max-w-7xl">
       {/* ---------------------------------------------------------------- */}
       <header className="flex flex-col gap-3 border-b border-stone-200 py-4 sm:flex-row sm:items-center">
         <div className="shrink-0 sm:w-56">
@@ -496,6 +505,8 @@ export default function Home() {
               extractions={app.extractions}
               read={app.read}
               deepRead={app.deep_read}
+              warming={prefetchState.warming}
+              queued={prefetchState.queued}
               onSelect={setSelected}
               onToggleRead={toggleRead}
             />
@@ -647,7 +658,10 @@ export default function Home() {
             api
               .state()
               .then(setApp)
-              .then(() => prefetchNextInOrder(selected))
+              // Re-kicks the queue: warming pauses rather than clears when the
+              // engine is busy or the cap is close, so a finished read is the
+              // natural moment to ask it to pick up again.
+              .then(() => warm(selected))
               .catch(() => {});
           }}
           onRemoved={() => {

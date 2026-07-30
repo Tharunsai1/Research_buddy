@@ -24,6 +24,7 @@ DIGEST_DIR = DATA_DIR / "digests"
 UPLOADS_DIR = DATA_DIR / "uploads"
 RESULTS_DIR = DATA_DIR / "results"
 REVIEWS_DIR = DATA_DIR / "reviews"
+HIGHLIGHTS_DIR = DATA_DIR / "highlights"
 COLLECTION_FILE = DATA_DIR / "collection.json"
 LIBRARY_INDEX_FILE = DATA_DIR / "library_index.json"
 GAPS_FILE = DATA_DIR / "gaps.json"
@@ -45,6 +46,51 @@ _EMPTY: dict[str, Any] = {
 }
 
 
+# Serialises the rename in _write_atomic. Deliberately separate from _lock,
+# which callers such as _save_collection already hold when they write —
+# threading.Lock is not reentrant, so sharing one would deadlock.
+_write_lock = threading.Lock()
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """Write `text` to `path` via a temp file so a reader never sees a
+    half-written record.
+
+    Two details matter on Windows, where `os.replace` fails with "Access is
+    denied" if anything else holds either name:
+
+    * the temp name is unique per call, not a fixed `.tmp` beside the target,
+      so concurrent writers never share a source file; and
+    * the rename is serialised and retried, because two writers replacing the
+      *same destination* collide even with distinct temp files — the failure
+      this was written for. A retry also covers a handle held briefly by
+      something outside this process, such as a virus scanner.
+
+    Both used to need bad luck. Background warm-up reads and scheduled digests
+    now run alongside whatever the reader is doing, so two writers landing on
+    one paper is ordinary. Every glob in this module matches `*.json`, so a
+    temp file left behind by a crash is ignored rather than loaded as data.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        with _write_lock:
+            for attempt in range(_REPLACE_ATTEMPTS):
+                try:
+                    tmp.replace(path)
+                    return
+                except PermissionError:
+                    if attempt == _REPLACE_ATTEMPTS - 1:
+                        raise
+                    time.sleep(0.05 * (attempt + 1))
+    finally:
+        tmp.unlink(missing_ok=True)  # no-op once the replace has succeeded
+
+
+_REPLACE_ATTEMPTS = 5
+
+
 def _load_collection() -> dict[str, Any]:
     if COLLECTION_FILE.exists():
         try:
@@ -60,9 +106,7 @@ _collection = _load_collection()
 
 def _save_collection() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = COLLECTION_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(_collection, indent=1), encoding="utf-8")
-    tmp.replace(COLLECTION_FILE)
+    _write_atomic(COLLECTION_FILE, json.dumps(_collection, indent=1))
 
 
 def get_cached_extractions(paper_ids: list[str]) -> dict[str, Extraction]:
@@ -187,9 +231,7 @@ def load_library_index() -> dict[str, list[float]]:
 
 def save_library_index(index: dict[str, list[float]]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = LIBRARY_INDEX_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(index), encoding="utf-8")
-    tmp.replace(LIBRARY_INDEX_FILE)
+    _write_atomic(LIBRARY_INDEX_FILE, json.dumps(index))
 
 
 # ---------------------------------------------------------------------------
@@ -204,9 +246,7 @@ def make_search_id(query: str) -> str:
 def save_search(search: dict[str, Any]) -> None:
     SEARCHES_DIR.mkdir(parents=True, exist_ok=True)
     path = SEARCHES_DIR / f"{search['id']}.json"
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(search, indent=1), encoding="utf-8")
-    tmp.replace(path)
+    _write_atomic(path, json.dumps(search, indent=1))
 
 
 def load_search(search_id: str) -> dict[str, Any] | None:
@@ -261,9 +301,7 @@ def save_deep_dive(paper_id: str, deep: dict[str, Any]) -> None:
         return
     DEEP_DIR.mkdir(parents=True, exist_ok=True)
     path = DEEP_DIR / f"{_safe(paper_id)}.json"
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(deep, indent=1), encoding="utf-8")
-    tmp.replace(path)
+    _write_atomic(path, json.dumps(deep, indent=1))
 
 
 def _built_from_landing_page(deep: dict[str, Any]) -> bool:
@@ -304,9 +342,7 @@ def save_index(paper_id: str, records: list[dict[str, Any]]) -> None:
         return
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
     path = INDEX_DIR / f"{_safe(paper_id)}.json"
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(records), encoding="utf-8")
-    tmp.replace(path)
+    _write_atomic(path, json.dumps(records))
 
 
 def load_index(paper_id: str) -> list[dict[str, Any]]:
@@ -326,9 +362,7 @@ def save_s2(paper_id: str, data: dict[str, Any]) -> None:
         return
     S2_DIR.mkdir(parents=True, exist_ok=True)
     path = S2_DIR / f"{_safe(paper_id)}.json"
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data), encoding="utf-8")
-    tmp.replace(path)
+    _write_atomic(path, json.dumps(data))
 
 
 def load_s2(paper_id: str) -> dict[str, Any] | None:
@@ -363,9 +397,7 @@ def save_settings(patch: dict[str, Any]) -> dict[str, Any]:
     current = load_settings()
     current.update(patch)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = SETTINGS_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(current, indent=1), encoding="utf-8")
-    tmp.replace(SETTINGS_FILE)
+    _write_atomic(SETTINGS_FILE, json.dumps(current, indent=1))
     return current
 
 
@@ -383,9 +415,7 @@ def save_matrix_row(paper_id: str, row: dict[str, Any]) -> None:
         return
     MATRIX_DIR.mkdir(parents=True, exist_ok=True)
     path = MATRIX_DIR / f"{_safe(paper_id)}.json"
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(row, indent=1), encoding="utf-8")
-    tmp.replace(path)
+    _write_atomic(path, json.dumps(row, indent=1))
 
 
 def load_matrix_row(paper_id: str) -> dict[str, Any] | None:
@@ -408,9 +438,7 @@ def save_results(paper_id: str, rows: list[dict[str, Any]]) -> None:
         return
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     path = RESULTS_DIR / f"{_safe(paper_id)}.json"
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(rows, indent=1), encoding="utf-8")
-    tmp.replace(path)
+    _write_atomic(path, json.dumps(rows, indent=1))
 
 
 def load_results(paper_id: str) -> list[dict[str, Any]] | None:
@@ -444,9 +472,7 @@ def save_review(paper_id: str, review: dict[str, Any]) -> None:
         return
     REVIEWS_DIR.mkdir(parents=True, exist_ok=True)
     path = REVIEWS_DIR / f"{_safe(paper_id)}.json"
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(review, indent=1), encoding="utf-8")
-    tmp.replace(path)
+    _write_atomic(path, json.dumps(review, indent=1))
 
 
 def load_review(paper_id: str) -> dict[str, Any] | None:
@@ -463,9 +489,7 @@ def load_review(paper_id: str) -> dict[str, Any] | None:
 
 def save_gaps(report: dict[str, Any]) -> None:
     GAPS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = GAPS_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(report, indent=1), encoding="utf-8")
-    tmp.replace(GAPS_FILE)
+    _write_atomic(GAPS_FILE, json.dumps(report, indent=1))
 
 
 def load_gaps() -> dict[str, Any] | None:
@@ -477,14 +501,51 @@ def load_gaps() -> dict[str, Any] | None:
         return None
 
 
+def save_highlights(paper_id: str, highlights: list[dict[str, Any]]) -> None:
+    if not _safe(paper_id):
+        return
+    HIGHLIGHTS_DIR.mkdir(parents=True, exist_ok=True)
+    _write_atomic(
+        HIGHLIGHTS_DIR / f"{_safe(paper_id)}.json", json.dumps(highlights, indent=1)
+    )
+
+
+def load_highlights(paper_id: str) -> list[dict[str, Any]]:
+    if not _safe(paper_id):
+        return []
+    path = HIGHLIGHTS_DIR / f"{_safe(paper_id)}.json"
+    if not path.exists():
+        return []
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+def all_highlights() -> list[dict[str, Any]]:
+    """Every highlight in the library, newest first.
+
+    Sorted here rather than at the call site because the library-wide view and
+    the per-paper view should not disagree about ordering.
+    """
+    if not HIGHLIGHTS_DIR.exists():
+        return []
+    out: list[dict[str, Any]] = []
+    for path in HIGHLIGHTS_DIR.glob("*.json"):
+        try:
+            out.extend(json.loads(path.read_text(encoding="utf-8")))
+        except Exception:
+            continue  # one unreadable file must not empty the whole view
+    out.sort(key=lambda h: h.get("created_at", ""), reverse=True)
+    return out
+
+
 def save_cards(paper_id: str, cards: list[dict[str, Any]]) -> None:
     if not _safe(paper_id):
         return
     CARDS_DIR.mkdir(parents=True, exist_ok=True)
     path = CARDS_DIR / f"{_safe(paper_id)}.json"
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(cards, indent=1), encoding="utf-8")
-    tmp.replace(path)
+    _write_atomic(path, json.dumps(cards, indent=1))
 
 
 def load_cards(paper_id: str) -> list[dict[str, Any]]:
@@ -540,9 +601,7 @@ def save_digest(search_id: str, digest: dict[str, Any]) -> None:
         except Exception:
             history = []
     history.insert(0, digest)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(history[:20], indent=1), encoding="utf-8")
-    tmp.replace(path)
+    _write_atomic(path, json.dumps(history[:20], indent=1))
 
 
 def load_digests(search_id: str) -> list[dict[str, Any]]:
@@ -607,9 +666,7 @@ def remove_paper(paper_id: str) -> dict[str, Any]:
                 search["reading_order"] = [
                     s for s in search.get("reading_order", []) if s["paper_id"] != paper_id
                 ]
-                tmp = path.with_suffix(".tmp")
-                tmp.write_text(json.dumps(search, indent=1), encoding="utf-8")
-                tmp.replace(path)
+                _write_atomic(path, json.dumps(search, indent=1))
                 touched_searches.append(search["id"])
                 for meta in _collection["searches"]:
                     if meta["id"] == search["id"]:
@@ -627,6 +684,7 @@ def remove_paper(paper_id: str) -> dict[str, Any]:
             CARDS_DIR,
             RESULTS_DIR,
             REVIEWS_DIR,
+            HIGHLIGHTS_DIR,
         ):
             path = directory / f"{safe}.json"
             if path.exists():

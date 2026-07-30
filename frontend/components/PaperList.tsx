@@ -8,6 +8,10 @@ interface Props {
   extractions: Record<string, Extraction>;
   read: string[];
   deepRead?: string[];
+  /** Paper the backend is reading ahead right now, if any. */
+  warming?: string | null;
+  /** Papers waiting their turn behind it. */
+  queued?: string[];
   onSelect: (paperId: string) => void;
   onToggleRead: (paperId: string, read: boolean) => void;
 }
@@ -18,11 +22,14 @@ export default function PaperList({
   extractions,
   read,
   deepRead = [],
+  warming = null,
+  queued = [],
   onSelect,
   onToggleRead,
 }: Props) {
   const readSet = new Set(read);
   const deepSet = new Set(deepRead);
+  const queuedSet = new Set(queued);
   return (
     <ol className="space-y-3">
       {paperIds.map((id, index) => {
@@ -58,10 +65,28 @@ export default function PaperList({
                     <span className="shrink-0 rounded-full border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">
                       full text
                     </span>
+                  ) : warming === id ? (
+                    <span
+                      title="Being read in the background — open it to watch, it will be ready sooner than if you started it yourself"
+                      className="flex shrink-0 items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700"
+                    >
+                      <span className="h-2 w-2 animate-spin rounded-full border border-amber-300 border-t-amber-700" />
+                      reading ahead
+                    </span>
+                  ) : queuedSet.has(id) ? (
+                    <span
+                      title="Queued to be read after the one in progress — only one runs at a time so it never slows down the paper you are on"
+                      className="shrink-0 rounded-full border border-stone-200 bg-stone-50 px-1.5 py-0.5 text-[10px] font-medium text-stone-500"
+                    >
+                      queued
+                    </span>
                   ) : null}
                 </p>
                 {extraction ? (
-                  <p className="mt-1.5 text-sm leading-relaxed text-stone-600">
+                  // Capped independently of the card: on a 16" screen the card
+                  // is ~1200px and a summary set to that width runs past 200
+                  // characters a line, which is well past readable.
+                  <p className="mt-1.5 max-w-[72ch] text-sm leading-relaxed text-stone-600">
                     {extraction.tldr}
                   </p>
                 ) : null}

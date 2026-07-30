@@ -3,11 +3,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { API_BASE, api } from "@/lib/api";
+import { attachPenSelection } from "@/lib/penSelection";
+import { describeRange, NO_ANCHOR_ATTR, type TextAnchor } from "@/lib/anchoring";
+import { clearHighlights, paintHighlights } from "@/lib/highlightPaint";
 import type {
   ChatAnswer,
   DeepDive,
   DeepJob,
   Extraction,
+  Highlight,
   Paper,
   PeerReview,
 } from "@/lib/types";
@@ -141,9 +145,14 @@ export default function PaperWorkspace({
     { question: string; anchor?: string; answer?: ChatAnswer; error?: string }[]
   >([]);
   const [asking, setAsking] = useState(false);
-  const [highlight, setHighlight] = useState<{ text: string; top: number; left: number } | null>(
-    null,
-  );
+  const [highlight, setHighlight] = useState<{
+    text: string;
+    anchor: TextAnchor | null;
+    top: number;
+    left: number;
+  } | null>(null);
+  const [saved, setSaved] = useState<Highlight[]>([]);
+  const [orphaned, setOrphaned] = useState<string[]>([]);
   const [pendingAnchor, setPendingAnchor] = useState<string | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const [noteText, setNoteText] = useState("");
@@ -230,15 +239,70 @@ export default function PaperWorkspace({
         setHighlight(null);
         return;
       }
-      setHighlight({ text, top: Math.max(rect.top - 44, 8), left: rect.left + rect.width / 2 });
+      // Describe the anchor now, while the selection is live. Doing it later
+      // is too late: acting on the toolbar collapses the selection, and the
+      // range object is only meaningful against the tree as it stands.
+      const anchor = describeRange(contentRef.current, range);
+      setHighlight({
+        text,
+        anchor,
+        top: Math.max(rect.top - 44, 8),
+        left: rect.left + rect.width / 2,
+      });
     };
-    document.addEventListener("mouseup", onSelection);
+
+    // `selectionchange` rather than mouseup: it is the one event every input
+    // produces. Listening for mouseup alone meant the toolbar never appeared
+    // on a tablet at all, because a touch selection fires no mouse events.
+    // It also fires continuously mid-drag, hence the settle delay — the
+    // toolbar should appear once, where the selection ended.
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const schedule = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(onSelection, 180);
+    };
+
+    document.addEventListener("selectionchange", schedule);
     document.addEventListener("keyup", onSelection);
+    // A finished pen drag is already settled, so skip the delay.
+    const detachPen = attachPenSelection({
+      container: () => contentRef.current,
+      onSelected: onSelection,
+    });
     return () => {
-      document.removeEventListener("mouseup", onSelection);
+      if (timer) clearTimeout(timer);
+      document.removeEventListener("selectionchange", schedule);
       document.removeEventListener("keyup", onSelection);
+      detachPen();
     };
   }, [deep]);
+
+  // Saved highlights for this paper.
+  useEffect(() => {
+    setSaved([]);
+    setOrphaned([]);
+    api
+      .highlights(paper.id)
+      .then((result) => setSaved(result.highlights))
+      .catch(() => setSaved([]));
+    return clearHighlights;
+  }, [paper.id]);
+
+  // Repaint whenever the text under them changes. `tab` and `deep` are both
+  // dependencies because switching tabs swaps the entire reading pane, and a
+  // deep dive arriving replaces placeholder text with the real thing — paint
+  // against the old tree and every anchor misses.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setOrphaned(
+        paintHighlights(
+          contentRef.current,
+          saved.filter((h) => h.tab === tab),
+        ),
+      );
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [saved, tab, deep]);
 
   // Notes: load fresh whenever the open paper changes, then autosave 800ms
   // after typing stops so there is no separate Save button to remember to
@@ -385,6 +449,29 @@ export default function PaperWorkspace({
     window.getSelection()?.removeAllRanges();
   };
 
+  const saveHighlight = async () => {
+    if (!highlight?.anchor) return;
+    const anchor = highlight.anchor;
+    setHighlight(null);
+    window.getSelection()?.removeAllRanges();
+    try {
+      const created = await api.addHighlight(paper.id, { tab, ...anchor });
+      setSaved((current) => [...current, created]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const dropHighlight = async (id: string) => {
+    setSaved((current) => current.filter((h) => h.id !== id));
+    try {
+      await api.removeHighlight(paper.id, id);
+    } catch {
+      // Put it back rather than leave the list disagreeing with the server.
+      api.highlights(paper.id).then((r) => setSaved(r.highlights)).catch(() => {});
+    }
+  };
+
   const running = job?.status === "running";
 
   // Deep dive takes ~90s-4min; waiting for the whole thing to unlock any
@@ -439,20 +526,44 @@ export default function PaperWorkspace({
       aria-modal="true"
       aria-label={paper.title}
     >
+      {/* Portalled to <body> because this pane has a backdrop-filter, and that
+          makes it the containing block for any fixed-position descendant —
+          the toolbar would be positioned against the scrolled pane instead of
+          the viewport, landing far from the text it belongs to. */}
       {highlight
         ? createPortal(
-            <button
-              onClick={useHighlight}
+            <div
               style={{ top: highlight.top, left: highlight.left, transform: "translateX(-50%)" }}
-              className="fixed z-[60] whitespace-nowrap rounded-full bg-stone-900 px-3 py-1.5 text-xs font-medium text-white shadow-lg transition hover:bg-stone-700"
+              className="fixed z-[60] flex items-center gap-1 rounded-full bg-stone-900 p-1 shadow-lg"
             >
-              💬 Ask about this
-            </button>,
+              <button
+                onClick={saveHighlight}
+                disabled={!highlight.anchor}
+                title={
+                  highlight.anchor
+                    ? "Keep this passage marked"
+                    : "This passage cannot be anchored, so it cannot be saved"
+                }
+                className="whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-medium text-white transition hover:bg-stone-700 disabled:opacity-40"
+              >
+                ✏️ Highlight
+              </button>
+              <span aria-hidden="true" className="h-4 w-px bg-stone-700" />
+              <button
+                onClick={useHighlight}
+                className="whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-medium text-white transition hover:bg-stone-700"
+              >
+                💬 Ask about this
+              </button>
+            </div>,
             document.body,
           )
         : null}
 
-      <div className="mx-auto w-full max-w-4xl rounded-2xl border border-stone-200 bg-[#fbfaf9] shadow-xl">
+      {/* 896 by default, 1024 once there is room (an iPad in landscape and the
+          laptop both clear xl). Wider than that starts to hurt: this pane is
+          almost entirely prose. */}
+      <div className="mx-auto w-full max-w-4xl rounded-2xl border border-stone-200 bg-[#fbfaf9] shadow-xl xl:max-w-5xl">
         {/* Header ------------------------------------------------------- */}
         <div className="border-b border-stone-200 p-6 pb-4">
           <div className="flex items-start justify-between gap-4">
@@ -672,6 +783,56 @@ export default function PaperWorkspace({
                   className="mt-2 w-full resize-y rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm leading-relaxed text-stone-800 placeholder:text-stone-400 focus:border-amber-400 focus:outline-none disabled:opacity-60"
                 />
               </div>
+
+              {saved.length > 0 ? (
+                // Excluded from anchoring: this panel quotes the highlights
+                // themselves, and it lives inside the searched region, so
+                // without this every anchor would match its own entry here
+                // rather than the passage in the paper.
+                <div
+                  {...{ [NO_ANCHOR_ATTR]: "" }}
+                  className="rounded-xl border border-stone-200 bg-white p-4"
+                >
+                  <p className="text-sm font-semibold text-stone-900">
+                    Highlights{" "}
+                    <span className="font-normal text-stone-400">({saved.length})</span>
+                  </p>
+                  <ul className="mt-2 space-y-2">
+                    {saved.map((mark) => {
+                      const lost = orphaned.includes(mark.id);
+                      return (
+                        <li key={mark.id} className="flex items-start gap-2">
+                          <span
+                            className={`mt-1 h-3 w-1 shrink-0 rounded-full ${
+                              lost ? "bg-stone-300" : "bg-amber-300"
+                            }`}
+                          />
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm leading-relaxed text-stone-700">
+                              {mark.quote}
+                            </p>
+                            <p className="mt-0.5 text-[11px] text-stone-400">
+                              {mark.tab}
+                              {/* Said plainly rather than hidden: the passage was
+                                  edited or regenerated, so the mark no longer has
+                                  text to sit on. Better than pretending it points
+                                  somewhere. */}
+                              {lost ? " · text has changed, no longer shown in place" : ""}
+                            </p>
+                          </div>
+                          <button
+                            onClick={() => dropHighlight(mark.id)}
+                            title="Remove this highlight"
+                            className="shrink-0 rounded px-1.5 text-xs text-stone-400 transition hover:text-stone-700"
+                          >
+                            ✕
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ) : null}
 
               {extraction ? (
                 <>

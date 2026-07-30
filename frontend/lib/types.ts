@@ -456,3 +456,23 @@ export interface PeerReview {
   from_fulltext: boolean;
   created_at: string;
 }
+
+/** What the backend's warm-up queue is doing. `warming` is the paper being
+ *  read right now (at most one — warming is deliberately serial). */
+export interface PrefetchState {
+  warming: string | null;
+  queued: string[];
+}
+
+/** A passage the reader marked. `quote` plus `prefix`/`suffix` is the anchor —
+ *  see lib/anchoring.ts for why it is text rather than a position. */
+export interface Highlight {
+  id: string;
+  paper_id: string;
+  tab: string;
+  quote: string;
+  prefix: string;
+  suffix: string;
+  note: string;
+  created_at: string;
+}

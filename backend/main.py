@@ -7,8 +7,11 @@ import logging
 import os
 import re
 import time
+import uuid
+from datetime import datetime
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -25,6 +28,7 @@ import library_search  # noqa: E402
 import llm  # noqa: E402
 import openrouter  # noqa: E402
 import pdf_ingest  # noqa: E402
+import prefetch  # noqa: E402
 import scheduler  # noqa: E402
 import store  # noqa: E402
 from arxiv_client import ArxivUnavailable, fetch_by_id, search_arxiv  # noqa: E402
@@ -43,7 +47,14 @@ from learning import (  # noqa: E402
     schedule,
     to_anki_tsv,
 )
-from models import Digest, Flashcard, MatrixRow, Paper  # noqa: E402
+from models import (  # noqa: E402
+    Digest,
+    Flashcard,
+    Highlight,
+    HighlightIn,
+    MatrixRow,
+    Paper,
+)
 from synthesize import expand_queries, update_global_map  # noqa: E402
 from research import (  # noqa: E402
     build_field_report,
@@ -59,6 +70,18 @@ from semantic_scholar import S2Error, fetch_batch  # noqa: E402
 from pipeline import FINAL_PAPERS, run_pipeline  # noqa: E402
 from rerank import ce_status, warm_cross_encoder  # noqa: E402
 
+
+# Without this the root logger has no handler and sits at WARNING, so every
+# INFO line the background workers emit is dropped on the floor. They are the
+# only trace those workers leave — nothing they do is a request the reader can
+# watch — so losing them means a digest or a warm-up that quietly declined to
+# run looks identical to one that never triggered. uvicorn's own loggers carry
+# their own handlers and don't propagate, so they are unaffected.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    datefmt="%H:%M:%S",
+)
 
 _scheduler_log = logging.getLogger("research-copilot.scheduler")
 
@@ -751,6 +774,177 @@ def get_deep_dive(paper_id: str):
     if deep is None:
         raise HTTPException(404, "This paper has not been deep-read yet.")
     return deep
+
+
+# ---------------------------------------------------------------------------
+# Prefetch — warming a paper's deep read before it is clicked
+# ---------------------------------------------------------------------------
+
+_prefetch_log = logging.getLogger("research-copilot.prefetch")
+_prefetch_queue: list[str] = []
+_prefetch_failed: set[str] = set()
+_prefetch_task: asyncio.Task | None = None
+# The paper being warmed right now. Separate from the queue because a paper is
+# taken off the queue before its read starts, so the queue alone cannot say
+# what is in progress.
+_prefetch_current: str | None = None
+
+# How long to wait before re-checking whether the reader's own read has
+# finished. Short enough that a warm-up starts promptly after it does.
+_PREFETCH_POLL_SECONDS = 2.0
+
+
+def _deep_job_running() -> bool:
+    return any(job.status == "running" for job in store.DEEP_JOBS.values())
+
+
+async def _drain_prefetch_queue() -> None:
+    """Warm queued papers one at a time, never alongside a read in progress.
+
+    Serial on purpose. run_deep_dive already fans a single paper out to
+    several concurrent calls, so warming a second paper next to the one the
+    reader is watching would slow that read down — the exact opposite of what
+    warming is for. The queue therefore yields to any running job, including
+    a read the reader started by hand, and only then takes its turn.
+    """
+    global _prefetch_current
+    while True:
+        deep_read = set(store.deep_dive_ids())
+        paper_id = prefetch.next_to_warm(
+            _prefetch_queue, deep_read=deep_read, failed=_prefetch_failed
+        )
+        if paper_id is None:
+            _prefetch_queue.clear()
+            return
+
+        while _deep_job_running():
+            await asyncio.sleep(_PREFETCH_POLL_SECONDS)
+
+        status = await llm.provider_status()
+        usage = openrouter.daily_usage() if status["provider"] == "openrouter" else None
+        hold = prefetch.should_hold(status, usage)
+        if hold:
+            # Leave the queue intact: the reader may switch engines or the cap
+            # may roll over, and the next request restarts the worker.
+            _prefetch_log.info("holding off on warming %s — %s", paper_id, hold)
+            return
+
+        if _deep_job_running():
+            # provider_status() is a network call; the reader can start a read
+            # of their own while it is in flight. Re-check rather than race it.
+            continue
+
+        _prefetch_queue.remove(paper_id)
+        paper = next((p for p in store.all_papers() if p.id == paper_id), None)
+        if paper is None:  # removed between queueing and running
+            continue
+
+        job = store.create_deep_job(paper_id)
+        _prefetch_log.info("warming %s", paper_id)
+        _prefetch_current = paper_id
+        try:
+            await _run_deep_dive(job, paper)
+        finally:
+            # Cleared even if the read raises, or the badge would sit on
+            # "reading now" for a paper nothing is working on.
+            _prefetch_current = None
+        if job.status == "error":
+            # Almost always a paper arXiv only publishes as PDF, which will
+            # fail identically forever — remember it so the queue moves on.
+            _prefetch_failed.add(paper_id)
+            _prefetch_log.info("could not warm %s — %s", paper_id, job.error)
+
+
+class PrefetchRequest(BaseModel):
+    reading_order: list[str]
+    after_paper_id: str | None = None
+
+
+@app.post("/api/prefetch")
+async def request_prefetch(request: PrefetchRequest):
+    """Warm the papers the reader is most likely to open next.
+
+    Best-effort and advisory: the caller says where the reader is, the policy
+    in prefetch.py decides what that makes worth warming, and the queue drains
+    in the background. Nothing here blocks, and a paper already read, already
+    running or already queued is silently skipped.
+    """
+    global _prefetch_task
+
+    wanted = prefetch.plan(request.reading_order[:500], request.after_paper_id)
+    known = {p.id for p in store.all_papers()}
+    wanted = [paper_id for paper_id in wanted if paper_id in known]
+
+    _prefetch_queue[:] = prefetch.enqueue(
+        _prefetch_queue,
+        wanted,
+        deep_read=set(store.deep_dive_ids()),
+        failed=_prefetch_failed,
+    )
+    if _prefetch_queue and (_prefetch_task is None or _prefetch_task.done()):
+        _prefetch_task = asyncio.create_task(_drain_prefetch_queue())
+    return _prefetch_state()
+
+
+def _prefetch_state() -> dict[str, Any]:
+    return {"warming": _prefetch_current, "queued": list(_prefetch_queue)}
+
+
+@app.get("/api/prefetch")
+def prefetch_status():
+    """What the warm-up queue is doing, so the paper list can show it.
+
+    Read-only and cheap — no disk, no model — because the list polls it while
+    it is open.
+    """
+    return _prefetch_state()
+
+
+# ---------------------------------------------------------------------------
+# Highlights — passages the reader marked
+# ---------------------------------------------------------------------------
+
+@app.get("/api/highlights")
+def list_all_highlights():
+    """Every highlight in the library, backing the library-wide view."""
+    return {"highlights": store.all_highlights()}
+
+
+@app.get("/api/papers/{paper_id:path}/highlights")
+def list_highlights(paper_id: str):
+    return {"highlights": store.load_highlights(paper_id)}
+
+
+@app.post("/api/papers/{paper_id:path}/highlights")
+def add_highlight(paper_id: str, request: HighlightIn):
+    if paper_id not in {p.id for p in store.all_papers()}:
+        raise HTTPException(404, "Paper not found in your library.")
+    quote = request.quote.strip()
+    if not quote:
+        raise HTTPException(400, "Nothing was selected.")
+    if len(quote) > 2000:
+        raise HTTPException(400, "That passage is too long to mark (2,000 chars max).")
+
+    highlight = Highlight(
+        **{**request.model_dump(), "quote": quote},
+        id=f"h_{uuid.uuid4().hex[:10]}",
+        paper_id=paper_id,
+        created_at=datetime.now().isoformat(timespec="seconds"),
+    )
+    highlights = store.load_highlights(paper_id)
+    highlights.append(highlight.model_dump())
+    store.save_highlights(paper_id, highlights)
+    return highlight.model_dump()
+
+
+@app.delete("/api/papers/{paper_id:path}/highlights/{highlight_id}")
+def remove_highlight(paper_id: str, highlight_id: str):
+    highlights = store.load_highlights(paper_id)
+    kept = [h for h in highlights if h.get("id") != highlight_id]
+    if len(kept) == len(highlights):
+        raise HTTPException(404, "No such highlight.")
+    store.save_highlights(paper_id, kept)
+    return {"removed": highlight_id}
 
 
 class NoteRequest(BaseModel):
