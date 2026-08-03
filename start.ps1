@@ -11,6 +11,53 @@
 $backendDir  = Join-Path $PSScriptRoot "backend"
 $frontendDir = Join-Path $PSScriptRoot "frontend"
 
+# Launched from the desktop shortcut there is no console to print to, so an
+# unset-up checkout would fail invisibly. Check first and say what to run.
+$venvPython = Join-Path $backendDir ".venv\Scripts\python.exe"
+$setup = @()
+if (-not (Test-Path $venvPython)) {
+    $setup += "Backend dependencies are missing. In the repo folder run:`n" +
+              "    cd backend`n" +
+              "    python -m venv .venv`n" +
+              "    .venv\Scripts\pip install -r requirements.txt"
+}
+if (-not (Test-Path (Join-Path $frontendDir "node_modules"))) {
+    $setup += "Frontend dependencies are missing. In the repo folder run:`n" +
+              "    cd frontend`n" +
+              "    npm install"
+}
+
+# Locate Node rather than trusting PATH. A launcher started from a process
+# that predates the Node install hands that stale environment to everything it
+# spawns; the frontend console then dies on its own and the app just never
+# comes up. Finding npm.cmd is not enough on its own — npm shells out to
+# `next`, which looks up `node` on PATH — so the directory is put on the
+# child's PATH below, not merely used to call npm.
+$npmCmd = (Get-Command npm.cmd -ErrorAction SilentlyContinue).Source
+if (-not $npmCmd) {
+    foreach ($candidate in @("$env:ProgramFiles\nodejs\npm.cmd",
+                             "${env:ProgramFiles(x86)}\nodejs\npm.cmd",
+                             "$env:LOCALAPPDATA\Programs\nodejs\npm.cmd")) {
+        if (Test-Path $candidate) { $npmCmd = $candidate; break }
+    }
+}
+if (-not $npmCmd) {
+    $setup += "Node.js was not found. Install it from https://nodejs.org (LTS), " +
+              "then run 'npm install' in the frontend folder."
+} else {
+    $nodeDir = Split-Path $npmCmd -Parent
+}
+if ($setup.Count -gt 0) {
+    Add-Type -AssemblyName System.Windows.Forms
+    [System.Windows.Forms.MessageBox]::Show(
+        ($setup -join "`n`n"),
+        "Research Copilot - setup incomplete",
+        [System.Windows.Forms.MessageBoxButtons]::OK,
+        [System.Windows.Forms.MessageBoxIcon]::Error
+    ) | Out-Null
+    exit 1
+}
+
 function Test-Port($port) {
     return [bool](Test-NetConnection -ComputerName "127.0.0.1" -Port $port `
         -WarningAction SilentlyContinue -InformationLevel Quiet)
@@ -52,7 +99,7 @@ if (-not (Test-Port 8321)) {
 if (-not (Test-Port 3000)) {
     Start-Process -FilePath "cmd.exe" -ArgumentList @(
         '/k',
-        "title Research Copilot - Frontend && cd /d `"$frontendDir`" && npm run dev"
+        "title Research Copilot - Frontend && cd /d `"$frontendDir`" && set `"PATH=$nodeDir;%PATH%`" && `"$npmCmd`" run dev"
     )
 }
 
