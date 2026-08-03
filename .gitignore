@@ -12,6 +12,7 @@ backend/.venv/
 
 # Secrets — never commit real keys
 backend/.env
+/API.txt
 
 # Runtime data (your personal paper library, searches, deep dives, etc.)
 backend/data/
