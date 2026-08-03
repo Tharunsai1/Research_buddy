@@ -124,6 +124,8 @@ export interface SectionDigest {
   summary: string;
   key_points: string[];
   words: number;
+  /** Words of `words` the model actually read. Older cached reads omit it. */
+  words_read?: number;
 }
 
 export interface Explanations {
@@ -149,6 +151,8 @@ export interface DeepDive {
   paper_id: string;
   source_url: string;
   total_words: number;
+  /** Words actually shown to the model. Older cached reads omit it. */
+  words_read?: number;
   deep_summary: string;
   contributions: string[];
   results_detail: string;
@@ -163,6 +167,7 @@ export interface DeepDive {
 export interface DeepJobPartial {
   source_url?: string;
   total_words?: number;
+  words_read?: number;
   sections?: SectionDigest[];
   synthesis?: { deep_summary: string; contributions: string[]; results_detail: string };
   explanations?: Explanations;

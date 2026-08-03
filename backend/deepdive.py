@@ -9,11 +9,12 @@ stays small even for long papers.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from typing import Any, Callable
 
 import meta_guard
-from fulltext import FullText, trim_words
+from fulltext import FullText
 from llm import parse_json
 from models import (
     CritiqueOut,
@@ -27,7 +28,21 @@ from models import (
 )
 
 MAX_SECTIONS = 8
-SECTION_WORD_LIMIT = 1400
+# Words per LLM call. A section longer than this is read in several passes
+# rather than cut: at 1400 a 5000-word section reached the model as its first
+# 28%, and the digest was presented next to the section's full length.
+SECTION_WORD_LIMIT = 3500
+# Ceiling on one section, so a malformed parse that yields a single enormous
+# "section" cannot turn one paper into dozens of calls.
+SECTION_PASS_LIMIT = 4
+
+# Sections that are short by nature and disproportionately worth reading.
+# Ranking on length alone cuts these first — dropping "Limitations" because it
+# is 200 words is exactly backwards.
+_ALWAYS_KEEP = re.compile(
+    r"\b(limitation|conclusion|discussion|future work|broader impact|ethic)",
+    re.I,
+)
 
 Progress = Callable[[str], None]
 Partial = Callable[[str, Any], None]
@@ -51,37 +66,69 @@ def _paper_header(paper: Paper) -> str:
 
 
 def _select_sections(full: FullText) -> list:
-    """Keep the most substantial sections, in reading order."""
+    """Keep the most substantial sections, in reading order.
+
+    Length is a poor proxy for what a reader wants: "Limitations" and
+    "Conclusion" are short by nature, so ranking on words alone drops exactly
+    the sections most worth keeping. Those sort first; length only decides the
+    slots they leave over.
+    """
     sections = list(full.sections)
     if len(sections) <= MAX_SECTIONS:
         return sections
-    ranked = sorted(sections, key=lambda s: s.words, reverse=True)[:MAX_SECTIONS]
+    ranked = sorted(
+        sections,
+        key=lambda s: (bool(_ALWAYS_KEEP.search(s.title)), s.words),
+        reverse=True,
+    )[:MAX_SECTIONS]
     keep = {id(s) for s in ranked}
     return [s for s in sections if id(s) in keep]
 
 
+def _passes(text: str, limit: int) -> list[str]:
+    """Consecutive word-windows covering `text`, capped at SECTION_PASS_LIMIT.
+
+    Truncating instead would drop the tail silently — the model cannot report
+    what it was never shown, and the reader has no way to notice.
+    """
+    words = text.split()
+    if len(words) <= limit:
+        return [text]
+    windows = [" ".join(words[i : i + limit]) for i in range(0, len(words), limit)]
+    return windows[:SECTION_PASS_LIMIT]
+
+
 async def _digest_section(paper: Paper, section, index: int, total: int) -> SectionDigest:
-    result = await parse_json(
-        SectionDigestOut,
-        system=(
-            "You are helping a student read a machine-learning paper carefully. "
-            "Digest ONE section at a time. Be concrete and faithful to the text: "
-            "keep specific numbers, dataset names, model names, and equations. "
-            "Never invent results that are not in the section."
-        ),
-        user=(
-            f"{_paper_header(paper)}\n\n"
-            f"Section {index} of {total}: {section.title}\n\n"
-            f"{trim_words(section.text, SECTION_WORD_LIMIT)}"
-        ),
-        max_tokens=900,
-        **_NO_META,
-    )
+    passes = _passes(section.text, SECTION_WORD_LIMIT)
+    parts = len(passes)
+
+    async def digest(part: int, text: str):
+        # A section read in several passes is still one section to the reader,
+        # so each pass is told where it sits — otherwise every pass opens as if
+        # it were the start of the section.
+        where = f"Section {index} of {total}: {section.title}"
+        if parts > 1:
+            where += f" (part {part} of {parts} — continues from the previous part)"
+        return await parse_json(
+            SectionDigestOut,
+            system=(
+                "You are helping a student read a machine-learning paper carefully. "
+                "Digest ONE section at a time. Be concrete and faithful to the text: "
+                "keep specific numbers, dataset names, model names, and equations. "
+                "Never invent results that are not in the section."
+            ),
+            user=f"{_paper_header(paper)}\n\n{where}\n\n{text}",
+            max_tokens=900,
+            **_NO_META,
+        )
+
+    results = [await digest(i + 1, text) for i, text in enumerate(passes)]
     return SectionDigest(
         title=section.title,
-        summary=result.summary,
-        key_points=result.key_points,
+        summary=" ".join(r.summary for r in results),
+        key_points=[p for r in results for p in r.key_points],
         words=section.words,
+        words_read=sum(len(text.split()) for text in passes),
     )
 
 
@@ -200,6 +247,7 @@ async def run_deep_dive(
         paper_id=paper.id,
         source_url=full.source_url,
         total_words=full.total_words,
+        words_read=sum(d.words_read for d in ordered),
         deep_summary=synthesis.deep_summary,
         contributions=synthesis.contributions,
         results_detail=synthesis.results_detail,

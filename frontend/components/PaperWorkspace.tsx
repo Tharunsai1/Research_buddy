@@ -493,6 +493,7 @@ export default function PaperWorkspace({
           paper_id: paper.id,
           source_url: partial.source_url ?? "",
           total_words: partial.total_words ?? 0,
+          words_read: partial.words_read ?? 0,
           deep_summary: partial.synthesis?.deep_summary ?? "",
           contributions: partial.synthesis?.contributions ?? [],
           results_detail: partial.synthesis?.results_detail ?? "",
@@ -572,7 +573,13 @@ export default function PaperWorkspace({
                 {number ? `Paper #${number}` : "Paper"}
                 {paper.relevance != null ? ` · ${Math.round(paper.relevance * 100)}% match` : ""}
                 {extraction ? ` · ${extraction.paper_type}` : ""}
-                {deep ? ` · full text read (${deep.total_words.toLocaleString()} words)` : ""}
+                {/* Only claim the full text when the model saw all of it. Reads
+                    cached before `words_read` existed keep the old wording. */}
+                {deep
+                  ? deep.words_read && deep.words_read < deep.total_words
+                    ? ` · read ${deep.words_read.toLocaleString()} of ${deep.total_words.toLocaleString()} words`
+                    : ` · full text read (${deep.total_words.toLocaleString()} words)`
+                  : ""}
               </p>
               <h2 className="mt-1 text-xl font-semibold leading-snug text-stone-900">
                 {paper.title}
@@ -1005,7 +1012,9 @@ export default function PaperWorkspace({
                   <div className="flex items-baseline justify-between gap-3">
                     <p className="text-sm font-semibold text-stone-900">{section.title}</p>
                     <span className="shrink-0 font-mono text-[11px] text-stone-400">
-                      {section.words.toLocaleString()} words
+                      {section.words_read != null && section.words_read < section.words
+                        ? `${section.words_read.toLocaleString()} of ${section.words.toLocaleString()} words`
+                        : `${section.words.toLocaleString()} words`}
                     </span>
                   </div>
                   <p className="mt-1.5 text-sm leading-relaxed text-stone-600">

@@ -223,6 +223,10 @@ class SectionDigest(BaseModel):
     summary: str
     key_points: list[str]
     words: int = 0
+    # How much of `words` actually reached the model. Equal to `words` unless
+    # the section was too long to read in one pass; showing only `words` next
+    # to a digest built from part of it overstates what the digest covers.
+    words_read: int = 0
 
 
 class ExplanationsOut(BaseModel):
@@ -298,6 +302,10 @@ class DeepDive(BaseModel):
     paper_id: str
     source_url: str
     total_words: int
+    # Words the model was actually shown, across every section it read. Below
+    # `total_words` when sections were dropped or read only in part — the
+    # reader is told "full text read", so the two must not silently diverge.
+    words_read: int = 0
     deep_summary: str
     contributions: list[str]
     results_detail: str
