@@ -24,6 +24,26 @@ const nextConfig: NextConfig = {
   async rewrites() {
     return [{ source: "/api/:path*", destination: `${BACKEND}/api/:path*` }];
   },
+
+  /**
+   * Origins `next dev` will serve its dev runtime to. Without this the server
+   * answers the HTML and the static chunks from any address, but refuses the
+   * dev-only requests hydration depends on — so a tablet or phone gets a page
+   * that renders correctly and then ignores every tap, with nothing in the UI
+   * to say why. Reaching the app from another device is the documented setup
+   * (see the LAN and iPad notes in the README), so those origins have to be
+   * declared here or that path is broken by default.
+   *
+   * Dev-only; `next build`/`next start` ignore it. Private ranges and the
+   * Tailscale namespace only — nothing routable from the public internet.
+   */
+  allowedDevOrigins: [
+    "*.ts.net",       // Tailscale MagicDNS
+    "100.*.*.*",      // Tailscale CGNAT range
+    "192.168.*.*",    // home LAN
+    "10.*.*.*",
+    "172.16.*.*",
+  ],
 };
 
 export default nextConfig;
