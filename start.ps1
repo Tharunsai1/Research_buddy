@@ -8,8 +8,8 @@
 # chat-completions gateway and does not serve the embedding model, so library
 # search and chat-with-paper retrieval both embed through local Ollama.
 
-$backendDir  = "D:\TEst\research-copilot\backend"
-$frontendDir = "D:\TEst\research-copilot\frontend"
+$backendDir  = Join-Path $PSScriptRoot "backend"
+$frontendDir = Join-Path $PSScriptRoot "frontend"
 
 function Test-Port($port) {
     return [bool](Test-NetConnection -ComputerName "127.0.0.1" -Port $port `

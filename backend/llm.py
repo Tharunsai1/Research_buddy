@@ -51,6 +51,15 @@ class LLMError(RuntimeError):
 # Selectable engines
 # ---------------------------------------------------------------------------
 
+def _ollama_label(model: str) -> str:
+    """Display name for whatever `RC_OLLAMA_MODEL` points at. Hardcoding one
+    model's name means the picker claims "Qwen3 8B" while the env is pointed at
+    something else entirely — the one place the label has to be right."""
+    name, _, tag = model.partition(":")
+    pretty = name.replace("-", " ").title()
+    return f"{pretty} {tag.upper()}" if tag else pretty
+
+
 ENGINES: dict[str, dict] = {
     "nemotron": {
         "id": "nemotron",
@@ -62,7 +71,7 @@ ENGINES: dict[str, dict] = {
     },
     "qwen3": {
         "id": "qwen3",
-        "label": "Qwen3 8B",
+        "label": _ollama_label(OLLAMA_MODEL),
         "provider": "ollama",
         "model": OLLAMA_MODEL,
         "blurb": "Local · runs offline and free. Faster but shallower; ~90s per paper.",
