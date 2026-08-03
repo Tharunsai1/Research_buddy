@@ -177,6 +177,29 @@ npm install
 npm run dev                     # http://localhost:3000
 ```
 
+### Or in one click
+
+Once both are installed, `start.ps1` does the whole thing: it starts Ollama,
+the backend and the frontend — each only if its port is down, so running it
+twice will not spawn duplicates — waits for them, and opens the browser.
+
+```powershell
+.\start.ps1
+```
+
+For a desktop shortcut, point one at
+`powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File <repo>\start.ps1`
+and set its icon to `research-copilot.ico`. Two consoles stay open while the
+app runs; closing them stops it.
+
+The script finds Node itself and puts it on the PATH it hands the frontend,
+rather than trusting the PATH it inherited. A shortcut launched from a process
+that predates the Node install passes that stale environment down, and
+`npm run dev` then dies in a console nothing is watching — the backend comes
+up, the frontend never does. For the same reason it checks the venv,
+`node_modules` and Node up front and opens a dialog naming the missing step:
+launched from a shortcut there is no console for an error to appear in.
+
 ### 3. Tests (optional)
 
 ```powershell
@@ -210,6 +233,14 @@ Two consequences worth knowing:
   with `(Get-NetIPAddress -AddressFamily IPv4 | Where-Object InterfaceAlias -eq 'Wi-Fi').IPAddress`.
   If it is handed out by DHCP it can change; reserve it in the router to make
   the address stable.
+* **The origin has to be declared to `next dev`.** It serves the HTML and the
+  static chunks to anyone who asks but withholds the dev-only requests
+  hydration needs, so an undeclared origin gets a page that renders correctly
+  and then ignores every tap — no error, nothing in the UI to say why, and
+  invisible from the machine running it, since over `localhost` it is fine.
+  `allowedDevOrigins` in `next.config.ts` covers the private ranges and the
+  Tailscale namespace; add anything else you reach it from. Dev only —
+  `next build`/`next start` ignore the setting.
 
 Windows blocks the inbound connection until you allow it. From an **elevated**
 PowerShell, once:
@@ -385,8 +416,23 @@ touching the DOM — the reading pane is React-rendered, and wrapping matches in
 (iPadOS before 17.2) highlights stop being *shaded*; they are still saved,
 listed and openable.
 
-A deep read makes ~11 LLM calls and takes roughly 90 seconds per paper on
-`qwen3:8b`; results are cached to disk, so reopening a paper is instant.
+A deep read makes one LLM call per section plus four reduce stages — ~11 on a
+typical paper — and takes roughly 90 seconds on `qwen3:8b`; results are cached
+to disk, so reopening a paper is instant.
+
+A section longer than `deepdive.SECTION_WORD_LIMIT` (3,500 words) is read in
+consecutive passes and merged, not truncated at the limit, so a long paper
+costs a few calls more and is covered end to end. The distinction matters more
+than it sounds: a truncated section still produces a confident digest, of the
+part that fit — one paper here described three separate case studies and the
+digest covered the first, with nothing to mark the other two as missing. Each
+section records the words that actually reached the model, and the workspace
+shows "read N of M words" whenever that is short of the section's length
+rather than claiming the full text. Where the whole paper is covered it says
+so, and means it. Papers with more sections than `MAX_SECTIONS` still lose
+some, but *Limitations*, *Conclusion*, *Discussion* and *Broader Impact* are
+kept ahead of length — they are short by nature and were the first to go when
+length alone decided.
 
 Most of that wait is avoidable, so the backend warms reads ahead of you
 (`prefetch.py` decides what, `main.py` runs it). When results land it starts
