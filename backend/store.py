@@ -1,4 +1,4 @@
-"""Disk persistence (JSON files under backend/data) + in-memory job registry."""
+﻿"""Disk persistence (JSON files under backend/data) + in-memory job registry."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ DEEP_DIR = DATA_DIR / "deep"
 INDEX_DIR = DATA_DIR / "index"
 S2_DIR = DATA_DIR / "s2"
 MATRIX_DIR = DATA_DIR / "matrix"
-CARDS_DIR = DATA_DIR / "cards"
+APPRAISALS_DIR = DATA_DIR / "appraisals"
 DIGEST_DIR = DATA_DIR / "digests"
 UPLOADS_DIR = DATA_DIR / "uploads"
 RESULTS_DIR = DATA_DIR / "results"
@@ -47,7 +47,7 @@ _EMPTY: dict[str, Any] = {
 
 
 # Serialises the rename in _write_atomic. Deliberately separate from _lock,
-# which callers such as _save_collection already hold when they write —
+# which callers such as _save_collection already hold when they write â€”
 # threading.Lock is not reentrant, so sharing one would deadlock.
 _write_lock = threading.Lock()
 
@@ -62,7 +62,7 @@ def _write_atomic(path: Path, text: str) -> None:
     * the temp name is unique per call, not a fixed `.tmp` beside the target,
       so concurrent writers never share a source file; and
     * the rename is serialised and retried, because two writers replacing the
-      *same destination* collide even with distinct temp files — the failure
+      *same destination* collide even with distinct temp files â€” the failure
       this was written for. A retry also covers a handle held briefly by
       something outside this process, such as a virus scanner.
 
@@ -265,7 +265,7 @@ def followed_searches() -> list[dict[str, Any]]:
     written by set_followed straight onto the search file, and the metas in
     collection.json are only ever built at search-creation time. Filtering
     the metas instead silently matched nothing, so the digest scheduler
-    could never fire — keep this the single source of truth.
+    could never fire â€” keep this the single source of truth.
     """
     with _lock:
         ids = [meta["id"] for meta in _collection["searches"]]
@@ -279,7 +279,7 @@ def followed_searches() -> list[dict[str, Any]]:
 
 # arXiv's pre-2007 ids carry a slash ("quant-ph/9903061"). A slash is a
 # directory separator on disk, so it is folded into the filename rather than
-# rejected — rejecting it silently dropped every deep dive, index, card and
+# rejected â€” rejecting it silently dropped every deep dive, index, card and
 # citation record for those papers.
 _SAFE_ID = re.compile(r"[A-Za-z0-9._/-]+")
 
@@ -292,7 +292,7 @@ def _safe(paper_id: str) -> str | None:
 
 
 def _unsafe(stem: str) -> str:
-    """Inverse of `_safe` — recover the paper id from a filename stem."""
+    """Inverse of `_safe` â€” recover the paper id from a filename stem."""
     return stem.replace("__", "/")
 
 
@@ -308,7 +308,7 @@ def _built_from_landing_page(deep: dict[str, Any]) -> bool:
     """True for records written before fulltext.py learned to reject the
     arXiv /abs/ page.
 
-    Those reads summarised the landing page — abstract and metadata — as if it
+    Those reads summarised the landing page â€” abstract and metadata â€” as if it
     were the paper, so their `source_url` points at /abs/ rather than a
     rendering. Nothing downstream can tell such a record from a real one, and
     it reads as confidently as any other, so it is withheld rather than served.
@@ -431,7 +431,7 @@ def load_matrix_row(paper_id: str) -> dict[str, Any] | None:
 
 
 def save_results(paper_id: str, rows: list[dict[str, Any]]) -> None:
-    """Reported numbers for one paper. An empty list is saved, not skipped —
+    """Reported numbers for one paper. An empty list is saved, not skipped â€”
     "we extracted this paper and it reports nothing" has to be distinguishable
     from "we never looked", or the scoreboard re-extracts it on every open."""
     if not _safe(paper_id):
@@ -540,53 +540,37 @@ def all_highlights() -> list[dict[str, Any]]:
     return out
 
 
-def save_cards(paper_id: str, cards: list[dict[str, Any]]) -> None:
+def save_appraisal(paper_id: str, appraisal: dict[str, Any]) -> None:
     if not _safe(paper_id):
         return
-    CARDS_DIR.mkdir(parents=True, exist_ok=True)
-    path = CARDS_DIR / f"{_safe(paper_id)}.json"
-    _write_atomic(path, json.dumps(cards, indent=1))
+    APPRAISALS_DIR.mkdir(parents=True, exist_ok=True)
+    _write_atomic(APPRAISALS_DIR / f"{_safe(paper_id)}.json", json.dumps(appraisal, indent=1))
 
 
-def load_cards(paper_id: str) -> list[dict[str, Any]]:
+def load_appraisal(paper_id: str) -> dict[str, Any] | None:
     if not _safe(paper_id):
-        return []
-    path = CARDS_DIR / f"{_safe(paper_id)}.json"
+        return None
+    path = APPRAISALS_DIR / f"{_safe(paper_id)}.json"
     if not path.exists():
-        return []
+        return None
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
+        return None
+
+
+def appraised_paper_ids() -> list[str]:
+    """Which papers already have an appraisal — drives the queue's progress
+    without loading every file."""
+    if not APPRAISALS_DIR.exists():
         return []
+    return sorted(_unsafe(p.stem) for p in APPRAISALS_DIR.glob("*.json"))
 
 
-def all_cards() -> list[dict[str, Any]]:
-    if not CARDS_DIR.exists():
-        return []
-    cards: list[dict[str, Any]] = []
-    for path in sorted(CARDS_DIR.glob("*.json")):
-        try:
-            cards.extend(json.loads(path.read_text(encoding="utf-8")))
-        except Exception:
-            continue
-    return cards
-
-
-def card_paper_ids() -> list[str]:
-    if not CARDS_DIR.exists():
-        return []
-    return sorted(_unsafe(p.stem) for p in CARDS_DIR.glob("*.json"))
-
-
-def update_card(card: dict[str, Any]) -> None:
-    """Persist one card's review state back into its paper's file."""
-    paper_id = card.get("paper_id", "")
-    cards = load_cards(paper_id)
-    for index, existing in enumerate(cards):
-        if existing.get("id") == card.get("id"):
-            cards[index] = card
-            save_cards(paper_id, cards)
-            return
+def delete_appraisal(paper_id: str) -> None:
+    if not _safe(paper_id):
+        return
+    (APPRAISALS_DIR / f"{_safe(paper_id)}.json").unlink(missing_ok=True)
 
 
 def save_digest(search_id: str, digest: dict[str, Any]) -> None:
@@ -619,7 +603,7 @@ def load_digests(search_id: str) -> list[dict[str, Any]]:
 def remove_paper(paper_id: str) -> dict[str, Any]:
     """Undo: drop a paper from the library, every search, and every per-paper file.
 
-    Exists mainly for the "+ Add" prerequisite flow — a paper placed in the
+    Exists mainly for the "+ Add" prerequisite flow â€” a paper placed in the
     wrong cluster (or the wrong search entirely) previously had no way back
     out short of asking for a manual fix. Works for any paper, not just added
     prerequisites.
@@ -681,7 +665,7 @@ def remove_paper(paper_id: str) -> dict[str, Any]:
             INDEX_DIR,
             S2_DIR,
             MATRIX_DIR,
-            CARDS_DIR,
+            APPRAISALS_DIR,
             RESULTS_DIR,
             REVIEWS_DIR,
             HIGHLIGHTS_DIR,
@@ -748,3 +732,4 @@ def _prune_jobs(max_age_seconds: float = 3600.0) -> None:
     cutoff = time.time() - max_age_seconds
     for job_id in [j for j, job in JOBS.items() if job.created_at < cutoff]:
         del JOBS[job_id]
+

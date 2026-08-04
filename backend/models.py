@@ -449,46 +449,82 @@ class ComparisonOut(BaseModel):
 # Learning loop: flashcards, quiz grading, field digest
 # ---------------------------------------------------------------------------
 
-class FlashcardOut(BaseModel):
-    question: str
-    answer: str
-    kind: Literal["concept", "result", "critique"]
+# ---------------------------------------------------------------------------
+# Critical appraisal — a structured read-through of one paper
+# ---------------------------------------------------------------------------
 
-
-class FlashcardSetOut(BaseModel):
-    cards: list[FlashcardOut] = Field(
-        json_schema_extra={"minItems": 3, "maxItems": 10},
-        description="Study cards for this paper.",
+class AppraisalAnswerOut(BaseModel):
+    question: str = Field(
+        description=(
+            "The checklist question, phrased for THIS paper. Keep the original "
+            "intent but use the paper's own vocabulary — ask a language-model "
+            "paper about its evaluation set, not about histology."
+        )
+    )
+    answer: str = Field(
+        description=(
+            "2-4 sentences answering it from the paper. Quote numbers, dataset "
+            "names and metrics exactly as printed; never recompute them."
+        )
+    )
+    status: Literal["answered", "partial", "not_reported", "not_applicable"] = Field(
+        description=(
+            "'not_reported' when the paper should address this and does not — "
+            "that is a finding about the paper, so say it rather than guessing. "
+            "'not_applicable' when the question does not fit this kind of paper "
+            "at all, e.g. asking a survey for its test-set accuracy. The two are "
+            "not interchangeable: the first is a criticism, the second is not."
+        )
     )
 
 
-class Flashcard(BaseModel):
-    id: str
+class AppraisalSectionOut(BaseModel):
+    answers: list[AppraisalAnswerOut] = Field(
+        json_schema_extra={"minItems": 2, "maxItems": 6},
+        description="One entry per checklist question in this section.",
+    )
+
+
+class AppraisalVerdictOut(BaseModel):
+    conclusion: str = Field(
+        description="What the authors conclude, in one or two sentences."
+    )
+    justified: bool = Field(
+        description="Whether the evidence presented actually supports that conclusion."
+    )
+    justification: str = Field(
+        description="Two sentences saying why it is or is not supported."
+    )
+    biggest_gap: str = Field(
+        description="The single thing that would most change your confidence if answered."
+    )
+    next_steps: list[str] = Field(
+        json_schema_extra={"minItems": 2, "maxItems": 5},
+        description="What further evidence you would want, or what the next study should test.",
+    )
+
+
+class AppraisalSection(BaseModel):
+    key: str
+    title: str
+    answers: list[AppraisalAnswerOut]
+
+
+class Appraisal(BaseModel):
+    """One paper worked through the checklist, persisted per paper."""
+
     paper_id: str
-    question: str
-    answer: str
-    kind: str                      # definition | concept | result | critique | relationship
-    # For kind="relationship": the other paper in the pair, so a cluster-scoped
-    # quiz can require BOTH ends of the relationship to be in scope, not just
-    # the source paper.
-    related_paper_id: Optional[str] = None
-    # Spaced-repetition state (SM-2 lite)
-    due: str = ""                  # ISO date; "" means never reviewed
-    interval: int = 0              # days until next review
-    ease: float = 2.5
-    reps: int = 0
-    lapses: int = 0
-    last_score: Optional[int] = None
-
-
-class GradeOut(BaseModel):
-    verdict: Literal["correct", "partial", "incorrect"]
-    score: int = Field(description="0-100 how complete and accurate the answer is.")
-    feedback: str = Field(description="2-3 sentences of direct, encouraging feedback.")
-    missed: list[str] = Field(
-        json_schema_extra={"maxItems": 4},
-        description="Key points the answer omitted or got wrong. Empty if fully correct.",
-    )
+    # Which text the answers came from. An abstract-only appraisal cannot
+    # honestly answer most Data/Performance questions, so the reader is told
+    # rather than left to assume the paper was read in full.
+    source: Literal["full_text", "abstract"]
+    sections: list[AppraisalSection]
+    conclusion: str = ""
+    justified: bool = True
+    justification: str = ""
+    biggest_gap: str = ""
+    next_steps: list[str] = []
+    created_at: str = ""
 
 
 class DigestHighlightOut(BaseModel):
@@ -511,19 +547,6 @@ class DigestOut(BaseModel):
         json_schema_extra={"maxItems": 8},
         description="One entry per genuinely notable new paper.",
     )
-
-
-class ReadingNudge(BaseModel):
-    """A foundation/core paper the reader is scoring poorly on that a later
-    paper in the same search explicitly builds on — a reason to reread it
-    before continuing, not just a low score in isolation."""
-
-    weak_paper_id: str
-    weak_paper_title: str
-    avg_score: float
-    reviewed_count: int
-    blocks: list[str]           # paper_ids of dependents
-    blocks_titles: list[str]
 
 
 # ---------------------------------------------------------------------------

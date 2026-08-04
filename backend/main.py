@@ -1,4 +1,4 @@
-"""Research Copilot backend — FastAPI app."""
+﻿"""Research Copilot backend â€” FastAPI app."""
 
 from __future__ import annotations
 
@@ -37,19 +37,10 @@ from chat import build_index  # noqa: E402
 from deepdive import run_deep_dive  # noqa: E402
 from extract import extract_many, extract_paper  # noqa: E402
 from fulltext import load_fulltext  # noqa: E402
-from learning import (  # noqa: E402
-    build_digest,
-    generate_cards,
-    grade_answer,
-    is_due,
-    reading_nudges,
-    relationship_cards,
-    schedule,
-    to_anki_tsv,
-)
+from appraisal import run_appraisal  # noqa: E402
+from learning import build_digest  # noqa: E402
 from models import (  # noqa: E402
     Digest,
-    Flashcard,
     Highlight,
     HighlightIn,
     MatrixRow,
@@ -73,8 +64,8 @@ from rerank import ce_status, warm_cross_encoder  # noqa: E402
 
 # Without this the root logger has no handler and sits at WARNING, so every
 # INFO line the background workers emit is dropped on the floor. They are the
-# only trace those workers leave — nothing they do is a request the reader can
-# watch — so losing them means a digest or a warm-up that quietly declined to
+# only trace those workers leave â€” nothing they do is a request the reader can
+# watch â€” so losing them means a digest or a warm-up that quietly declined to
 # run looks identical to one that never triggered. uvicorn's own loggers carry
 # their own handlers and don't propagate, so they are unaffected.
 logging.basicConfig(
@@ -84,8 +75,10 @@ logging.basicConfig(
 )
 
 _scheduler_log = logging.getLogger("research-copilot.scheduler")
+_appraisal_log = logging.getLogger("research-copilot.appraisal")
+_results_log = logging.getLogger("research-copilot.results")
 
-# How often to check whether any followed search is due — not the digest
+# How often to check whether any followed search is due â€” not the digest
 # interval itself (scheduler.DIGEST_INTERVAL_DAYS, ~weekly). Checking hourly
 # costs nothing (a no-op when nothing is due) and means a search becomes
 # current again within an hour of the backend coming back up, rather than
@@ -96,7 +89,7 @@ DIGEST_CHECK_INTERVAL = int(os.getenv("RC_DIGEST_CHECK_INTERVAL", str(60 * 60)))
 async def _run_due_digests() -> None:
     """One scheduler tick: refresh every followed search that's due.
 
-    This can only run while the backend process is alive — see scheduler.py.
+    This can only run while the backend process is alive â€” see scheduler.py.
     Digest runs cost real LLM calls, so this respects the same OpenRouter
     daily cap the model picker already warns about, and silently skips a
     tick entirely rather than partially running through the cap.
@@ -333,7 +326,7 @@ def get_prerequisites(limit: int = 20, search_id: str | None = None):
 @app.get("/api/library/search")
 async def search_library(q: str, limit: int = 10):
     """Semantic search across every paper collected, not just one search's
-    results — "which of my papers discussed KV-cache compression?" without
+    results â€” "which of my papers discussed KV-cache compression?" without
     remembering which search turned it up."""
     papers = {p.id: p for p in store.all_papers()}
     extractions = store.all_extractions()
@@ -371,7 +364,7 @@ def _attach_to_search(search_id: str, paper: Paper, citing: set[str]) -> bool:
     search["paper_ids"].append(paper.id)
     index_of = {pid: i + 1 for i, pid in enumerate(search["paper_ids"])}
 
-    # Papers in *this* search that cite it — real citation edges, no LLM call.
+    # Papers in *this* search that cite it â€” real citation edges, no LLM call.
     local_citing = [pid for pid in search["paper_ids"] if pid in citing]
     for pid in local_citing[:4]:
         search["edges"].append(
@@ -380,7 +373,7 @@ def _attach_to_search(search_id: str, paper: Paper, citing: set[str]) -> bool:
                 "target": paper.id,
                 "kind": "builds_on",
                 "description": (
-                    f"[{index_of[pid]}] cites this paper — groundwork this search builds on."
+                    f"[{index_of[pid]}] cites this paper â€” groundwork this search builds on."
                 ),
                 "real": True,
             }
@@ -410,7 +403,7 @@ def _attach_to_search(search_id: str, paper: Paper, citing: set[str]) -> bool:
             "paper_id": paper.id,
             "stage": "foundation",
             "why": (
-                f"Cited by {len(local_citing)} of the papers in this search — "
+                f"Cited by {len(local_citing)} of the papers in this search â€” "
                 "read it first for the groundwork."
                 if local_citing
                 else "A foundation of this field, added to your map."
@@ -491,12 +484,12 @@ async def add_paper(request: AddPaperRequest):
     }
 
 
-MAX_UPLOAD_BYTES = 40 * 1024 * 1024  # 40MB — comfortably above a typical paper
+MAX_UPLOAD_BYTES = 40 * 1024 * 1024  # 40MB â€” comfortably above a typical paper
 
 
 @app.post("/api/papers/upload")
 async def upload_paper(file: UploadFile = File(...)):
-    """A paper that isn't on arXiv — a camera-ready, something emailed by a
+    """A paper that isn't on arXiv â€” a camera-ready, something emailed by a
     professor, a workshop paper never posted. Extracted text flows through
     the exact same extraction, clustering, deep-dive and flashcard machinery
     as an arXiv result; only where the full text is fetched from differs
@@ -533,7 +526,7 @@ async def upload_paper(file: UploadFile = File(...)):
     store.save_upload(paper.id, data)
     store.merge_search_results("Uploaded", [paper], {paper.id: extraction})
 
-    # Place it in the global map the same way a real search's results are —
+    # Place it in the global map the same way a real search's results are â€”
     # incremental past FULL_RECLUSTER_MAX, so this stays cheap regardless of
     # library size.
     snapshot = store.collection_snapshot()
@@ -585,33 +578,22 @@ def search_diff(a: str, b: str):
 
 @app.post("/api/searches/{search_id}/report")
 def field_report(search_id: str):
-    """Overview + clusters + reading order + flashcard progress as one .md file."""
+    """Overview + clusters + reading order + appraisal progress as one .md file."""
     search = store.load_search(search_id)
     if search is None:
         raise HTTPException(404, "Search not found.")
 
-    paper_ids = set(search.get("paper_ids") or [])
-    raw_cards = [card for pid in paper_ids for card in store.load_cards(pid)]
-    cards = [Flashcard(**c) for c in raw_cards]
-    # A relationship card only counts for this search if both papers it
-    # connects are actually in it — matches the study deck's own scoping.
-    scoped = [
-        c
-        for c in cards
-        if c.kind != "relationship" or (c.related_paper_id in paper_ids)
-    ]
-    reviewed = [c for c in scoped if c.reps > 0]
-    scores = [c.last_score for c in reviewed if c.last_score is not None]
-    card_stats = {
-        "total": len(scoped),
-        "relationship": sum(1 for c in scoped if c.kind == "relationship"),
-        "per_paper": sum(1 for c in scoped if c.kind != "relationship"),
-        "reviewed": len(reviewed),
-        "due": sum(1 for c in scoped if is_due(c)),
-        "avg_score": (sum(scores) / len(scores)) if scores else None,
+    paper_ids = list(search.get("paper_ids") or [])
+    done = [pid for pid in paper_ids if store.load_appraisal(pid)]
+    appraisal_stats = {
+        "total": len(paper_ids),
+        "appraised": len(done),
+        "remaining": len(paper_ids) - len(done),
     }
 
-    content = build_field_report(search, _papers_by_id(), card_stats, store.all_notes())
+    content = build_field_report(
+        search, _papers_by_id(), appraisal_stats, store.all_notes()
+    )
     filename = f"{search_id}-field-report.md"
     return Response(
         content=content,
@@ -631,7 +613,7 @@ def mark_read(request: ReadRequest):
 
 
 # ---------------------------------------------------------------------------
-# Deep dive — full-text reading of a single paper
+# Deep dive â€” full-text reading of a single paper
 # ---------------------------------------------------------------------------
 
 async def _run_deep_dive(job, paper: Paper) -> None:
@@ -639,12 +621,12 @@ async def _run_deep_dive(job, paper: Paper) -> None:
         stage = job.stage("fetch")
         stage.status = "active"
 
-        # An uploaded paper's text already lives on disk — no arXiv fetch
+        # An uploaded paper's text already lives on disk â€” no arXiv fetch
         # applies (there's nothing to fetch it from). Every stage after this
         # one operates on the same FullText shape regardless of source.
         upload_bytes = store.load_upload(paper.id)
         if upload_bytes is not None:
-            stage.detail = "Reading the uploaded PDF…"
+            stage.detail = "Reading the uploaded PDFâ€¦"
             full = await asyncio.to_thread(
                 pdf_ingest.fulltext_from_pdf, paper.id, upload_bytes, paper.abstract
             )
@@ -655,20 +637,20 @@ async def _run_deep_dive(job, paper: Paper) -> None:
                     "extraction and flashcards built from the abstract still work."
                 )
         else:
-            stage.detail = "Fetching full text from arXiv…"
+            stage.detail = "Fetching full text from arXivâ€¦"
             full = await asyncio.to_thread(load_fulltext, paper.id)
             if full is None:
                 # Deliberately refuse rather than read whatever arXiv served. For a
                 # paper with no HTML rendering arXiv returns the /abs/ landing page,
                 # and summarising that produces a confident-looking deep dive built
-                # from an abstract — worse than no deep dive at all.
+                # from an abstract â€” worse than no deep dive at all.
                 raise RuntimeError(
                     "arXiv has no HTML full text for this paper, only the abstract page "
                     "(papers before ~2023 are often PDF-only), so there is nothing to read "
                     "in depth. The summary, extraction and flashcards built from the "
-                    "abstract still work — open the PDF for the full paper."
+                    "abstract still work â€” open the PDF for the full paper."
                 )
-        stage.detail = f"{full.total_words:,} words · {len(full.sections)} sections"
+        stage.detail = f"{full.total_words:,} words Â· {len(full.sections)} sections"
         stage.status = "done"
         job.partial["source_url"] = full.source_url
         job.partial["total_words"] = full.total_words
@@ -716,7 +698,7 @@ async def _run_deep_dive(job, paper: Paper) -> None:
 
         stage = job.stage("index")
         stage.status = "active"
-        stage.detail = "Embedding the paper for chat…"
+        stage.detail = "Embedding the paper for chatâ€¦"
         records = await build_index(full)
         store.save_index(paper.id, records)
         deep.chunk_count = len(records)
@@ -777,7 +759,7 @@ def get_deep_dive(paper_id: str):
 
 
 # ---------------------------------------------------------------------------
-# Prefetch — warming a paper's deep read before it is clicked
+# Prefetch â€” warming a paper's deep read before it is clicked
 # ---------------------------------------------------------------------------
 
 _prefetch_log = logging.getLogger("research-copilot.prefetch")
@@ -803,7 +785,7 @@ async def _drain_prefetch_queue() -> None:
 
     Serial on purpose. run_deep_dive already fans a single paper out to
     several concurrent calls, so warming a second paper next to the one the
-    reader is watching would slow that read down — the exact opposite of what
+    reader is watching would slow that read down â€” the exact opposite of what
     warming is for. The queue therefore yields to any running job, including
     a read the reader started by hand, and only then takes its turn.
     """
@@ -826,7 +808,7 @@ async def _drain_prefetch_queue() -> None:
         if hold:
             # Leave the queue intact: the reader may switch engines or the cap
             # may roll over, and the next request restarts the worker.
-            _prefetch_log.info("holding off on warming %s — %s", paper_id, hold)
+            _prefetch_log.info("holding off on warming %s â€” %s", paper_id, hold)
             return
 
         if _deep_job_running():
@@ -850,9 +832,9 @@ async def _drain_prefetch_queue() -> None:
             _prefetch_current = None
         if job.status == "error":
             # Almost always a paper arXiv only publishes as PDF, which will
-            # fail identically forever — remember it so the queue moves on.
+            # fail identically forever â€” remember it so the queue moves on.
             _prefetch_failed.add(paper_id)
-            _prefetch_log.info("could not warm %s — %s", paper_id, job.error)
+            _prefetch_log.info("could not warm %s â€” %s", paper_id, job.error)
 
 
 class PrefetchRequest(BaseModel):
@@ -894,14 +876,14 @@ def _prefetch_state() -> dict[str, Any]:
 def prefetch_status():
     """What the warm-up queue is doing, so the paper list can show it.
 
-    Read-only and cheap — no disk, no model — because the list polls it while
+    Read-only and cheap â€” no disk, no model â€” because the list polls it while
     it is open.
     """
     return _prefetch_state()
 
 
 # ---------------------------------------------------------------------------
-# Highlights — passages the reader marked
+# Highlights â€” passages the reader marked
 # ---------------------------------------------------------------------------
 
 @app.get("/api/highlights")
@@ -953,7 +935,7 @@ class NoteRequest(BaseModel):
 
 @app.get("/api/papers/{paper_id:path}/note")
 def get_note(paper_id: str):
-    """The reader's own free-text note on a paper — separate from anything
+    """The reader's own free-text note on a paper â€” separate from anything
     AI-generated, and the one place in the app where their own thinking lives."""
     return {"paper_id": paper_id, "text": store.get_note(paper_id)}
 
@@ -1026,7 +1008,7 @@ async def build_matrix(request: PaperIdsRequest, refresh: bool = False):
 
 
 # ---------------------------------------------------------------------------
-# Code / reproducibility signals — pure text scan, no LLM, no network
+# Code / reproducibility signals â€” pure text scan, no LLM, no network
 # ---------------------------------------------------------------------------
 
 def _scan_text_for(paper_id: str, paper: Paper) -> tuple[str, bool]:
@@ -1054,7 +1036,7 @@ def library_artifacts():
     """Code availability + reproducibility signals for every paper.
 
     Free and instant (regex over text already on disk), so this is computed
-    on request rather than cached — no staleness to manage.
+    on request rather than cached â€” no staleness to manage.
     """
     papers = _papers_by_id()
     out = []
@@ -1089,6 +1071,7 @@ async def build_results(request: PaperIdsRequest, refresh: bool = False):
 
     status = await llm.provider_status()
     rows: list[dict] = []
+    failed: list[dict] = []
     for paper in papers:
         cached = None if refresh else store.load_results(paper.id)
         if cached is not None:
@@ -1096,14 +1079,27 @@ async def build_results(request: PaperIdsRequest, refresh: bool = False):
             continue
         if not status["ready"]:
             raise HTTPException(400, status["detail"])
+        # One paper must not cost the others. Extraction is a per-paper LLM
+        # call over a batch of up to 30, so a single bad reply used to discard
+        # every row already extracted in the same request and surface as one
+        # opaque failure for the whole scoreboard. Report the casualties
+        # instead and keep what worked; each success is cached as it lands, so
+        # a retry only re-runs what actually failed.
         try:
             extracted = await insights.extract_results(paper, extractions.get(paper.id))
-        except llm.LLMError as exc:
-            raise HTTPException(502, str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - one paper's failure is data, not a crash
+            _results_log.exception("results extraction failed for %s", paper.id)
+            failed.append({"paper_id": paper.id, "title": paper.title, "reason": str(exc)[:300]})
+            continue
         dumped = [row.model_dump() for row in extracted]
         store.save_results(paper.id, dumped)
         rows.extend(dumped)
-    return {"rows": rows}
+
+    # Every paper failing is a real failure, not a partial result — say so
+    # rather than handing back an empty table that looks like "no numbers".
+    if failed and not rows:
+        raise HTTPException(502, failed[0]["reason"] or "Results extraction failed.")
+    return {"rows": rows, "failed": failed}
 
 
 @app.get("/api/results")
@@ -1258,181 +1254,95 @@ async def compare(request: CompareRequest):
 
 
 # ---------------------------------------------------------------------------
-# Learning loop: flashcards, quiz, digest
+# Critical appraisal: one paper at a time, against the checklist
 # ---------------------------------------------------------------------------
 
-@app.post("/api/papers/{paper_id:path}/cards")
-async def make_cards(paper_id: str, refresh: bool = False):
-    papers = _papers_by_id()
-    paper = papers.get(paper_id)
-    if paper is None:
-        raise HTTPException(404, "Paper not found in your library.")
-
-    existing = store.load_cards(paper_id)
-    if existing and not refresh:
-        return {"cards": existing, "generated": False}
-
-    status = await llm.provider_status()
-    if not status["ready"]:
-        raise HTTPException(400, status["detail"])
-    try:
-        cards = await generate_cards(paper, store.all_extractions().get(paper_id))
-    except llm.LLMError as exc:
-        raise HTTPException(502, str(exc)) from exc
-
-    # Keep review history for cards that survive a regeneration.
-    previous = {card["id"]: card for card in existing}
-    payload = []
-    for card in cards:
-        old = previous.get(card.id)
-        if old and old.get("question") == card.question:
-            card.due = old.get("due", "")
-            card.interval = old.get("interval", 0)
-            card.ease = old.get("ease", 2.5)
-            card.reps = old.get("reps", 0)
-            card.lapses = old.get("lapses", 0)
-            card.last_score = old.get("last_score")
-        payload.append(card.model_dump())
-
-    store.save_cards(paper_id, payload)
-    return {"cards": payload, "generated": True}
-
-
-def _save_relationship_cards(search_id: str, cards: list[Flashcard]) -> list[dict]:
-    """Relationship cards live in their source paper's card file, alongside its
-    own definition/concept/result/critique cards — merged in, never overwritten."""
-    by_paper: dict[str, list[Flashcard]] = {}
-    for card in cards:
-        by_paper.setdefault(card.paper_id, []).append(card)
-
-    saved: list[dict] = []
-    for paper_id, new_cards in by_paper.items():
-        existing = store.load_cards(paper_id)
-        previous = {c["id"]: c for c in existing}
-        # Keep everything except this search's own relationship cards, which
-        # are about to be replaced with a fresh (possibly changed) batch.
-        # The old id scheme ("rel:{search_id}:...") didn't carry the source
-        # paper id first, so grading couldn't find the card by id; matching it
-        # too here clears out any of those left behind by that bug.
-        prefix = f"{paper_id}:rel:{search_id}:"
-        old_prefix = f"rel:{search_id}:"
-        payload = [
-            c
-            for c in existing
-            if not c.get("id", "").startswith(prefix)
-            and not c.get("id", "").startswith(old_prefix)
-        ]
-        for card in new_cards:
-            old = previous.get(card.id)
-            if old and old.get("question") == card.question:
-                card.due = old.get("due", "")
-                card.interval = old.get("interval", 0)
-                card.ease = old.get("ease", 2.5)
-                card.reps = old.get("reps", 0)
-                card.lapses = old.get("lapses", 0)
-                card.last_score = old.get("last_score")
-            dumped = card.model_dump()
-            payload.append(dumped)
-            saved.append(dumped)
-        store.save_cards(paper_id, payload)
+@app.get("/api/papers/{paper_id:path}/appraisal")
+def get_appraisal(paper_id: str):
+    saved = store.load_appraisal(paper_id)
+    if saved is None:
+        raise HTTPException(404, "This paper has not been appraised yet.")
     return saved
 
 
-@app.post("/api/searches/{search_id}/relationship-cards")
-def make_relationship_cards(search_id: str):
-    """Cross-paper cards from this search's relationship edges — instant, no LLM call."""
-    search = store.load_search(search_id)
-    if search is None:
-        raise HTTPException(404, "Search not found.")
-    cards = relationship_cards(search, _papers_by_id())
-    saved = _save_relationship_cards(search_id, cards)
-    return {"cards": saved, "generated": len(saved)}
-
-
-@app.get("/api/searches/{search_id}/reading-nudges")
-def get_reading_nudges(search_id: str):
-    """Papers the reader is quizzing poorly on that a later paper in this
-    search's reading order explicitly builds on — a reason to reread before
-    continuing, joined from flashcard scores and the landscape's own edges."""
-    search = store.load_search(search_id)
-    if search is None:
-        raise HTTPException(404, "Search not found.")
-    paper_ids = search.get("paper_ids") or []
-    cards_by_paper = {
-        pid: [Flashcard(**c) for c in store.load_cards(pid)] for pid in paper_ids
-    }
-    nudges = reading_nudges(search, _papers_by_id(), cards_by_paper)
-    return {"nudges": [n.model_dump() for n in nudges]}
-
-
-@app.get("/api/cards")
-def list_cards(due_only: bool = False, paper_id: str | None = None):
-    raw = store.load_cards(paper_id) if paper_id else store.all_cards()
-    cards = [Flashcard(**item) for item in raw]
-    due = [card for card in cards if is_due(card)]
-    selected = due if due_only else cards
-    return {
-        "cards": [card.model_dump() for card in selected],
-        "total": len(cards),
-        "due": len(due),
-        "papers": store.card_paper_ids(),
-    }
-
-
-@app.post("/api/cards/anki")
-def cards_anki(request: PaperIdsRequest):
-    raw = (
-        [card for pid in request.paper_ids for card in store.load_cards(pid)]
-        if request.paper_ids
-        else store.all_cards()
-    )
-    if not raw:
-        raise HTTPException(400, "No cards yet — generate some first.")
-    cards = [Flashcard(**item) for item in raw]
-    return Response(
-        content=to_anki_tsv(cards, _papers_by_id()),
-        media_type="text/tab-separated-values",
-        headers={"Content-Disposition": 'attachment; filename="research-copilot-cards.txt"'},
-    )
-
-
-class GradeRequest(BaseModel):
-    card_id: str
-    answer: str
-
-
-@app.post("/api/cards/grade")
-async def grade_card(request: GradeRequest):
-    answer = request.answer.strip()
-    if not answer:
-        raise HTTPException(400, "Answer is empty.")
-    paper_id = request.card_id.split(":")[0]
-    raw = next(
-        (c for c in store.load_cards(paper_id) if c.get("id") == request.card_id), None
-    )
-    if raw is None:
-        raise HTTPException(404, "Card not found.")
-    card = Flashcard(**raw)
-    paper = _papers_by_id().get(card.paper_id)
+@app.post("/api/papers/{paper_id:path}/appraisal")
+async def make_appraisal(paper_id: str, refresh: bool = False):
+    paper = _papers_by_id().get(paper_id)
     if paper is None:
         raise HTTPException(404, "Paper not found in your library.")
+
+    existing = store.load_appraisal(paper_id)
+    if existing and not refresh:
+        return existing
 
     status = await llm.provider_status()
     if not status["ready"]:
         raise HTTPException(400, status["detail"])
+
+    # Prefer the full text when the paper has already been deep-read; the
+    # appraisal records which it used either way, so an abstract-only pass is
+    # never mistaken for a complete one. load_fulltext is synchronous and does
+    # network I/O, so it goes to a thread rather than blocking the loop.
+    full = None
+    if store.load_deep_dive(paper_id) is not None:
+        try:
+            full = await asyncio.to_thread(load_fulltext, paper.id)
+        except Exception:
+            # Falling back to the abstract is survivable, but doing it silently
+            # is not: the appraisal would look complete and answer half the
+            # checklist with "not reported" for no visible reason.
+            _appraisal_log.exception("full text unavailable for %s", paper_id)
+            full = None
+
+    # The extraction already classified this paper; the checklist swaps in
+    # questions that suit its kind rather than asking a survey for its
+    # test-set accuracy.
+    extraction = store.all_extractions().get(paper_id)
+    paper_type = getattr(extraction, "paper_type", None) or "method"
+
     try:
-        grade = await grade_answer(paper, card, answer)
+        result = await run_appraisal(paper, full, paper_type)
     except llm.LLMError as exc:
         raise HTTPException(502, str(exc)) from exc
 
-    updated = schedule(card, grade.verdict, grade.score)
-    store.update_card(updated.model_dump())
-    return {"grade": grade.model_dump(), "card": updated.model_dump()}
+    payload = result.model_dump()
+    store.save_appraisal(paper_id, payload)
+    return payload
 
+
+@app.delete("/api/papers/{paper_id:path}/appraisal")
+def drop_appraisal(paper_id: str):
+    store.delete_appraisal(paper_id)
+    return {"ok": True}
+
+
+@app.get("/api/appraisals")
+def appraisal_progress(search_id: str | None = None):
+    """Which papers are done — drives the queue. Scoped to one search when
+    asked, since 'what is left to read' means this search's papers, not the
+    whole accumulated library."""
+    done = set(store.appraised_paper_ids())
+    if search_id:
+        search = store.load_search(search_id)
+        if search is None:
+            raise HTTPException(404, "Search not found.")
+        ids = list(search.get("paper_ids") or [])
+    else:
+        ids = [p.id for p in store.all_papers()]
+    return {
+        "appraised": [pid for pid in ids if pid in done],
+        "remaining": [pid for pid in ids if pid not in done],
+        "total": len(ids),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Field digest: what is new in a followed search
+# ---------------------------------------------------------------------------
 
 async def _build_and_save_digest(search: dict, max_new: int = 6) -> Digest:
     """The digest logic itself, shared by the on-demand endpoint and the
-    background scheduler for followed searches — one place that decides what
+    background scheduler for followed searches â€” one place that decides what
     a digest run does, so a manual check and an automatic one behave
     identically."""
     search_id = search["id"]
@@ -1451,7 +1361,7 @@ async def _build_and_save_digest(search: dict, max_new: int = 6) -> Digest:
             new_paper_ids=[],
             headline="No new papers since your last check.",
             summary=(
-                f"Checked {len(candidates)} candidates on arXiv for “{query}”. "
+                f"Checked {len(candidates)} candidates on arXiv for â€œ{query}â€. "
                 "Everything relevant is already in your library."
             ),
             highlights=[],
@@ -1465,7 +1375,7 @@ async def _build_and_save_digest(search: dict, max_new: int = 6) -> Digest:
     digest = await build_digest(search, fresh, extractions, len(candidates))
 
     # Fold the new papers into the library, then actually place them on the
-    # global map. merge_search_results only records the papers — without the
+    # global map. merge_search_results only records the papers â€” without the
     # update below every digest silently added papers that existed in the
     # library but appeared nowhere on the reading map, so the header count and
     # the map disagreed. Mirrors the upload path.
@@ -1520,7 +1430,7 @@ class FollowRequest(BaseModel):
 @app.post("/api/searches/{search_id}/follow")
 def set_followed(search_id: str, request: FollowRequest):
     """Mark a search to auto-refresh its field digest roughly weekly, while
-    the backend process is running (see the scheduler in lifespan) — there is
+    the backend process is running (see the scheduler in lifespan) â€” there is
     no external cron here, so "weekly" means "next time a week has passed
     and the backend happens to be up," not a guaranteed wall-clock trigger.
     """
@@ -1556,10 +1466,11 @@ async def chat_with_paper(paper_id: str, request: ChatRequest):
     index = store.load_index(paper_id)
     if not index:
         raise HTTPException(
-            400, "Read the full paper first — chat needs the indexed full text."
+            400, "Read the full paper first â€” chat needs the indexed full text."
         )
     try:
         answer = await chat_with_paper_impl(paper, question, index, anchor=anchor)
     except llm.LLMError as exc:
         raise HTTPException(502, str(exc)) from exc
     return answer.model_dump()
+

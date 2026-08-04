@@ -365,12 +365,12 @@ _STAGE_LABEL = {"foundation": "Foundations", "core": "Core methods", "frontier":
 def build_field_report(
     search: dict,
     papers: dict[str, Paper],
-    card_stats: dict,
+    appraisal_stats: dict,
     notes: dict[str, str] | None = None,
 ) -> str:
-    """Bundle a search's landscape + reading order + flashcard progress into
+    """Bundle a search's landscape + reading order + appraisal progress into
     one exportable Markdown document — no LLM call, everything here already
-    exists from earlier synthesis and study-deck use.
+    exists from earlier synthesis and from working through the checklist.
 
     `notes` are the one part of the report that is not AI-generated — the
     reader's own thinking, included verbatim rather than summarized.
@@ -445,14 +445,12 @@ def build_field_report(
             lines.append("> " + text.replace("\n", "\n> "))
             lines.append("")
 
-    lines += ["## Study progress", ""]
-    lines.append(
-        f"- {card_stats['total']} flashcards "
-        f"({card_stats['relationship']} relationship, {card_stats['per_paper']} per-paper)"
-    )
-    lines.append(f"- {card_stats['reviewed']} reviewed at least once · {card_stats['due']} due now")
-    if card_stats.get("avg_score") is not None:
-        lines.append(f"- Average score so far: {card_stats['avg_score']:.0f}/100")
+    lines += ["## Appraisal progress", ""]
+    total = appraisal_stats.get("total", 0)
+    done = appraisal_stats.get("appraised", 0)
+    lines.append(f"- {done} of {total} papers appraised against the checklist")
+    if appraisal_stats.get("remaining"):
+        lines.append(f"- {appraisal_stats['remaining']} still to read")
     lines.append("")
 
     return "\n".join(lines)

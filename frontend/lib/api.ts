@@ -1,16 +1,15 @@
-import type {
+﻿import type {
   AppState,
+  Appraisal,
+  AppraisalProgress,
   ArtifactsResponse,
-  CardsResponse,
   EnginesResponse,
   ChatAnswer,
   CompareResult,
   DeepDive,
   DeepJob,
   Digest,
-  Flashcard,
   GapReport,
-  GradeResult,
   Health,
   Highlight,
   Job,
@@ -18,7 +17,6 @@ import type {
   MatrixRow,
   PeerReview,
   PrefetchState,
-  ReadingNudge,
   Prerequisite,
   RelatedWork,
   ResultRow,
@@ -28,7 +26,7 @@ import type {
 
 /** Empty by default: next.config.ts rewrites `/api/*` to the backend, so a
  *  relative URL resolves against whichever host served the page. That is what
- *  lets the same build work on this machine and from an iPad on the network —
+ *  lets the same build work on this machine and from an iPad on the network â€”
  *  a baked-in address would be wrong on one of them. Set
  *  NEXT_PUBLIC_API_BASE only to point at a backend somewhere else entirely. */
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "";
@@ -165,27 +163,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ paper_a, paper_b }),
     }),
-  makeCards: (paper_id: string, refresh = false) =>
-    request<{ cards: Flashcard[]; generated: boolean }>(
-      `/api/papers/${paper_id}/cards?refresh=${refresh}`,
-      { method: "POST" },
-    ),
-  cards: (options: { dueOnly?: boolean; paperId?: string } = {}) => {
-    const params = new URLSearchParams();
-    if (options.dueOnly) params.set("due_only", "true");
-    if (options.paperId) params.set("paper_id", options.paperId);
-    const query = params.toString();
-    return request<CardsResponse>(`/api/cards${query ? `?${query}` : ""}`);
-  },
-  gradeCard: (card_id: string, answer: string) =>
-    request<GradeResult>("/api/cards/grade", {
+  /** Cached appraisal, or 404 when the paper has not been worked through yet. */
+  appraisal: (paper_id: string) =>
+    request<Appraisal>(`/api/papers/${paper_id}/appraisal`),
+  runAppraisal: (paper_id: string, refresh = false) =>
+    request<Appraisal>(`/api/papers/${paper_id}/appraisal?refresh=${refresh}`, {
       method: "POST",
-      body: JSON.stringify({ card_id, answer }),
     }),
-  relationshipCards: (search_id: string) =>
-    request<{ cards: Flashcard[]; generated: number }>(
-      `/api/searches/${search_id}/relationship-cards`,
-      { method: "POST" },
+  dropAppraisal: (paper_id: string) =>
+    request<{ ok: boolean }>(`/api/papers/${paper_id}/appraisal`, {
+      method: "DELETE",
+    }),
+  appraisalProgress: (search_id?: string) =>
+    request<AppraisalProgress>(
+      `/api/appraisals${search_id ? `?search_id=${encodeURIComponent(search_id)}` : ""}`,
     ),
   searchDiff: (a: string, b: string) =>
     request<SearchDiff>(
@@ -204,8 +195,6 @@ export const api = {
     request<LibrarySearchResult>(
       `/api/library/search?q=${encodeURIComponent(q)}&limit=${limit}`,
     ),
-  readingNudges: (search_id: string) =>
-    request<{ nudges: ReadingNudge[] }>(`/api/searches/${search_id}/reading-nudges`),
   artifacts: () => request<ArtifactsResponse>(`/api/library/artifacts`),
   buildResults: (paper_ids: string[], refresh = false) =>
     request<{ rows: ResultRow[] }>(`/api/results${refresh ? "?refresh=true" : ""}`, {
@@ -230,7 +219,7 @@ export const api = {
     formData.append("file", file);
     let response: Response;
     try {
-      // No Content-Type header here on purpose — the browser sets the
+      // No Content-Type header here on purpose â€” the browser sets the
       // multipart boundary itself; forcing application/json (request<T>'s
       // default) would break the upload.
       response = await fetch(`${API_BASE}/api/papers/upload`, { method: "POST", body: formData });
@@ -290,3 +279,4 @@ export async function downloadFile(
   link.remove();
   URL.revokeObjectURL(url);
 }
+

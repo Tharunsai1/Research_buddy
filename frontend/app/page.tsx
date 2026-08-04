@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, downloadFile } from "@/lib/api";
@@ -6,7 +6,6 @@ import type { AppState, Health, Job, PrefetchState, SearchDetail } from "@/lib/t
 import PipelineCard from "@/components/PipelineCard";
 import LibrarySearch from "@/components/LibrarySearch";
 import UploadPdf from "@/components/UploadPdf";
-import ReadingNudges from "@/components/ReadingNudges";
 import PaperList from "@/components/PaperList";
 import PaperWorkspace from "@/components/PaperWorkspace";
 import FieldDigest from "@/components/FieldDigest";
@@ -18,7 +17,7 @@ import ResearchToolkit from "@/components/ResearchToolkit";
 import ResultsBoard from "@/components/ResultsBoard";
 import CodeAvailability from "@/components/CodeAvailability";
 import ResearchGaps from "@/components/ResearchGaps";
-import StudyDeck from "@/components/StudyDeck";
+import PaperAppraisal from "@/components/PaperAppraisal";
 import RelationshipsGraph from "@/components/RelationshipsGraph";
 import Timeline from "@/components/Timeline";
 import {
@@ -113,7 +112,7 @@ export default function Home() {
             }
           }
         } catch {
-          /* transient poll failure — keep polling */
+          /* transient poll failure â€” keep polling */
         }
       }, 800);
     } catch (error) {
@@ -175,7 +174,7 @@ export default function Home() {
   // backend where they are and let it warm what they are likely to open next:
   // the first paper as soon as results land, then the ones after whichever
   // paper they open. The queue, the look-ahead and the "never compete with a
-  // read in progress" rule all live in prefetch.py — this is only a hint, so
+  // read in progress" rule all live in prefetch.py â€” this is only a hint, so
   // failures are swallowed.
   const warm = useCallback(
     (afterPaperId: string | null) => {
@@ -234,7 +233,7 @@ export default function Home() {
   };
 
   // Three widths, one per target: 1024 up to an iPad in portrait, 1152 on an
-  // iPad in landscape (xl, 1280+ — the tablet lands here at 1366), and 1280 on
+  // iPad in landscape (xl, 1280+ â€” the tablet lands here at 1366), and 1280 on
   // the laptop (2xl, 1536+). Text blocks inside cap their own line length, so
   // the extra room widens the map and the cards rather than stretching prose
   // into unreadable lines.
@@ -258,7 +257,7 @@ export default function Home() {
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search an ML research topic — e.g. retrieval-augmented generation"
+            placeholder="Search an ML research topic â€” e.g. retrieval-augmented generation"
             disabled={view === "running"}
             className="w-full rounded-lg border border-stone-300 bg-white px-3.5 py-2 text-sm text-stone-900 placeholder:text-stone-400 focus:border-stone-500 focus:outline-none disabled:bg-stone-50 disabled:text-stone-400"
           />
@@ -357,10 +356,10 @@ export default function Home() {
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-sm text-stone-500">
                 Your <span className="font-medium text-stone-800">{search.title}</span> reading
-                map · {mapData?.count ?? paperCount} paper
+                map Â· {mapData?.count ?? paperCount} paper
                 {(mapData?.count ?? paperCount) === 1 ? "" : "s"}
                 {scope === "search" ? ` of ${paperCount} collected` : ""}
-                {enrichedCount > 0 ? " · real citation data" : ""}
+                {enrichedCount > 0 ? " Â· real citation data" : ""}
               </p>
               <div className="flex items-center gap-2">
                 <div className="flex rounded-lg border border-stone-200 bg-white p-0.5">
@@ -394,7 +393,7 @@ export default function Home() {
                     disabled={enriching}
                     className="rounded-lg border border-stone-200 bg-white px-3 py-1.5 text-xs font-medium text-stone-700 transition hover:border-stone-400 disabled:opacity-50"
                   >
-                    {enriching ? "Fetching citations…" : "↻ Load citation data"}
+                    {enriching ? "Fetching citationsâ€¦" : "â†» Load citation data"}
                   </button>
                 ) : null}
                 <button
@@ -414,10 +413,10 @@ export default function Home() {
                     }
                   }}
                   disabled={exportingReport}
-                  title="Overview, clusters, reading order and flashcard progress as one Markdown file"
+                  title="Overview, clusters, reading order and appraisal progress as one Markdown file"
                   className="rounded-lg border border-stone-200 bg-white px-3 py-1.5 text-xs font-medium text-stone-700 transition hover:border-stone-400 disabled:opacity-50"
                 >
-                  {exportingReport ? "Exporting…" : "⤓ Field report"}
+                  {exportingReport ? "Exportingâ€¦" : "â¤“ Field report"}
                 </button>
                 <div className="flex rounded-lg border border-stone-200 bg-white p-0.5">
                   {(["map", "timeline"] as const).map((view) => (
@@ -480,7 +479,7 @@ export default function Home() {
 
           <section className="rounded-xl border border-stone-200 bg-white p-5">
             <p className="font-mono text-[11px] uppercase tracking-widest text-stone-400">
-              Field overview · {search.paper_ids.length} papers ·{" "}
+              Field overview Â· {search.paper_ids.length} papers Â·{" "}
               {search.created_at.slice(0, 10)}
             </p>
             <h2 className="mt-1 text-lg font-semibold text-stone-900">{search.title}</h2>
@@ -488,7 +487,7 @@ export default function Home() {
           </section>
 
           <section className="space-y-3">
-            <SectionTitle icon="◫">Method clusters</SectionTitle>
+            <SectionTitle icon="â—«">Method clusters</SectionTitle>
             <ClustersSection
               clusters={search.clusters}
               papers={app.papers}
@@ -498,7 +497,7 @@ export default function Home() {
           </section>
 
           <section className="space-y-3">
-            <SectionTitle icon="≡">Papers</SectionTitle>
+            <SectionTitle icon="â‰¡">Papers</SectionTitle>
             <PaperList
               paperIds={search.paper_ids}
               papers={app.papers}
@@ -513,7 +512,7 @@ export default function Home() {
           </section>
 
           <section className="space-y-3 rounded-xl border border-stone-200 bg-white p-5">
-            <SectionTitle icon="⌥">Paper relationships</SectionTitle>
+            <SectionTitle icon="âŒ¥">Paper relationships</SectionTitle>
             <RelationshipsGraph
               paperIds={search.paper_ids}
               papers={app.papers}
@@ -524,7 +523,7 @@ export default function Home() {
 
           {search.tensions.length > 0 ? (
             <section className="space-y-3">
-              <SectionTitle icon="⚠">Tensions</SectionTitle>
+              <SectionTitle icon="âš ">Tensions</SectionTitle>
               <TensionsSection
                 tensions={search.tensions}
                 papers={app.papers}
@@ -536,7 +535,7 @@ export default function Home() {
 
           {search.consensus.length > 0 ? (
             <section className="space-y-3">
-              <SectionTitle icon="✓">Consensus</SectionTitle>
+              <SectionTitle icon="âœ“">Consensus</SectionTitle>
               <ConsensusSection consensus={search.consensus} />
             </section>
           ) : null}
@@ -555,13 +554,13 @@ export default function Home() {
 
           {enrichedCount > 0 ? (
             <section className="space-y-3">
-              <SectionTitle icon="⚑">Read these first</SectionTitle>
+              <SectionTitle icon="âš‘">Read these first</SectionTitle>
               <Prerequisites
                 papers={app.papers}
                 enrichedCount={enrichedCount}
                 searchId={search.id}
                 onAdded={() => {
-                  // Refresh the search too, not just the library — the added
+                  // Refresh the search too, not just the library â€” the added
                   // paper joins this search's list, graph and reading order.
                   refresh(search.id).catch(() => {});
                 }}
@@ -570,7 +569,7 @@ export default function Home() {
           ) : null}
 
           <section className="space-y-3">
-            <SectionTitle icon="◷">What&apos;s new in this field</SectionTitle>
+            <SectionTitle icon="â—·">What&apos;s new in this field</SectionTitle>
             <FieldDigest
               key={`digest-${search.id}`}
               searchId={search.id}
@@ -585,25 +584,24 @@ export default function Home() {
 
           {app.searches.length > 1 ? (
             <section className="space-y-3">
-              <SectionTitle icon="⇄">Compare past searches</SectionTitle>
+              <SectionTitle icon="â‡„">Compare past searches</SectionTitle>
               <SearchDiffView searches={app.searches} onSelectPaper={setSelected} />
             </section>
           ) : null}
 
           <section className="space-y-3">
-            <SectionTitle icon="✎">Study deck</SectionTitle>
-            <StudyDeck
-              key={`deck-${search.id}`}
+            <SectionTitle icon="âœ“">Critical appraisal</SectionTitle>
+            <PaperAppraisal
+              key={`appraisal-${search.id}`}
               searchId={search.id}
               paperIds={search.paper_ids}
-              clusters={search.clusters}
               papers={app.papers}
-              read={app.read}
+              onSelectPaper={setSelected}
             />
           </section>
 
           <section className="space-y-3">
-            <SectionTitle icon="⌗">Research toolkit</SectionTitle>
+            <SectionTitle icon="âŒ—">Research toolkit</SectionTitle>
             <ResearchToolkit
               key={search.id}
               paperIds={search.paper_ids}
@@ -613,7 +611,7 @@ export default function Home() {
           </section>
 
           <section className="space-y-3">
-            <SectionTitle icon="▦">Results scoreboard</SectionTitle>
+            <SectionTitle icon="â–¦">Results scoreboard</SectionTitle>
             <ResultsBoard
               key={`results-${search.id}`}
               paperIds={search.paper_ids}
@@ -623,18 +621,17 @@ export default function Home() {
           </section>
 
           <section className="space-y-3">
-            <SectionTitle icon="⌨">Code &amp; reproducibility</SectionTitle>
+            <SectionTitle icon="âŒ¨">Code &amp; reproducibility</SectionTitle>
             <CodeAvailability onSelect={setSelected} />
           </section>
 
           <section className="space-y-3">
-            <SectionTitle icon="✦">Research gaps</SectionTitle>
+            <SectionTitle icon="âœ¦">Research gaps</SectionTitle>
             <ResearchGaps onSelect={setSelected} />
           </section>
 
           <section className="space-y-3">
-            <SectionTitle icon="→">Suggested reading order</SectionTitle>
-            <ReadingNudges searchId={search.id} onSelectPaper={setSelected} />
+            <SectionTitle icon="â†’">Suggested reading order</SectionTitle>
             <ReadingOrderSection
               readingOrder={search.reading_order}
               papers={app.papers}
@@ -676,3 +673,5 @@ export default function Home() {
     </div>
   );
 }
+
+

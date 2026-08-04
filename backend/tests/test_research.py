@@ -1,4 +1,4 @@
-"""Search diffing and the field report — both pure, both LLM-free."""
+﻿"""Search diffing and the field report â€” both pure, both LLM-free."""
 
 from __future__ import annotations
 
@@ -6,11 +6,8 @@ from research import build_field_report, diff_searches
 
 CARD_STATS = {
     "total": 12,
-    "relationship": 9,
-    "per_paper": 3,
-    "reviewed": 4,
-    "due": 2,
-    "avg_score": 87.5,
+    "appraised": 4,
+    "remaining": 8,
 }
 
 
@@ -69,7 +66,7 @@ def test_a_search_against_itself_shows_no_change(search_a, papers):
 
 
 def test_diff_is_directional(search_a, search_b, papers):
-    """Swapping the operands swaps the columns — the UI labels one side
+    """Swapping the operands swaps the columns â€” the UI labels one side
     'then' and the other 'now', so this must not be symmetric."""
     forward = diff_searches(search_a, search_b, papers)
     backward = diff_searches(search_b, search_a, papers)
@@ -109,7 +106,7 @@ def test_report_includes_every_section_that_has_content(search_a, papers):
         "## Consensus",
         "## Open problems",
         "## Suggested reading order",
-        "## Study progress",
+        "## Appraisal progress",
     ):
         assert heading in report, heading
 
@@ -126,16 +123,17 @@ def test_report_groups_reading_order_by_stage(search_a, papers):
     assert "### Frontier" not in report, "empty stages should be omitted"
 
 
-def test_report_states_study_progress(search_a, papers):
+def test_report_states_appraisal_progress(search_a, papers):
     report = build_field_report(search_a, papers, CARD_STATS)
-    assert "12 flashcards (9 relationship, 3 per-paper)" in report
-    assert "4 reviewed at least once · 2 due now" in report
-    assert "Average score so far: 88/100" in report
+    assert "4 of 12 papers appraised against the checklist" in report
+    assert "8 still to read" in report
 
 
-def test_report_omits_the_average_before_anything_is_graded(search_a, papers):
-    stats = {**CARD_STATS, "avg_score": None}
-    assert "Average score" not in build_field_report(search_a, papers, stats)
+def test_report_omits_the_remainder_once_everything_is_appraised(search_a, papers):
+    stats = {"total": 12, "appraised": 12, "remaining": 0}
+    report = build_field_report(search_a, papers, stats)
+    assert "12 of 12 papers appraised" in report
+    assert "still to read" not in report
 
 
 def test_report_skips_papers_that_are_no_longer_in_the_library(search_a):
@@ -159,7 +157,7 @@ def test_report_omits_the_notes_section_when_there_are_none(search_a, papers):
 
 def test_report_only_shows_notes_for_papers_in_this_search(search_a, papers):
     """A note on a paper from an unrelated search must not leak into this
-    report — notes are library-wide but the report is search-scoped."""
+    report â€” notes are library-wide but the report is search-scoped."""
     notes = {"2006.11239": "a note on a paper not in search_a"}
     report = build_field_report(search_a, papers, CARD_STATS, notes)
     assert "## Your notes" not in report
@@ -179,4 +177,5 @@ def test_report_omits_sections_a_sparse_search_never_produced(papers):
     report = build_field_report(bare, papers, CARD_STATS)
     assert "## Overview" not in report
     assert "## Tensions" not in report
-    assert "## Study progress" in report, "progress is always reported"
+    assert "## Appraisal progress" in report, "progress is always reported"
+

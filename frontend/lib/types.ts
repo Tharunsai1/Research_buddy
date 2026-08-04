@@ -246,41 +246,41 @@ export interface CompareResult {
   comparison: Comparison;
 }
 
-// --- learning loop --------------------------------------------------------
+// --- critical appraisal ---------------------------------------------------
 
-export interface Flashcard {
-  id: string;
-  paper_id: string;
+export interface AppraisalAnswer {
   question: string;
   answer: string;
-  kind: string;
-  /** For kind="relationship": the other paper in the pair. */
-  related_paper_id?: string | null;
-  due: string;
-  interval: number;
-  ease: number;
-  reps: number;
-  lapses: number;
-  last_score: number | null;
+  /** `not_reported` is a criticism of the paper; `not_applicable` is not —
+   *  it means the checklist asked something this kind of paper never had to
+   *  answer. They must not render alike. */
+  status: "answered" | "partial" | "not_reported" | "not_applicable";
 }
 
-export interface Grade {
-  verdict: "correct" | "partial" | "incorrect";
-  score: number;
-  feedback: string;
-  missed: string[];
+export interface AppraisalSection {
+  key: string;
+  title: string;
+  answers: AppraisalAnswer[];
 }
 
-export interface GradeResult {
-  grade: Grade;
-  card: Flashcard;
+export interface Appraisal {
+  paper_id: string;
+  /** Which text the answers came from — an abstract-only pass cannot
+   *  answer most Data/Performance questions, so the reader is told. */
+  source: "full_text" | "abstract";
+  sections: AppraisalSection[];
+  conclusion: string;
+  justified: boolean;
+  justification: string;
+  biggest_gap: string;
+  next_steps: string[];
+  created_at: string;
 }
 
-export interface CardsResponse {
-  cards: Flashcard[];
+export interface AppraisalProgress {
+  appraised: string[];
+  remaining: string[];
   total: number;
-  due: number;
-  papers: string[];
 }
 
 export interface DigestHighlight {
@@ -341,15 +341,6 @@ export interface LibrarySearchHit {
 export interface LibrarySearchResult {
   query: string;
   results: LibrarySearchHit[];
-}
-
-export interface ReadingNudge {
-  weak_paper_id: string;
-  weak_paper_title: string;
-  avg_score: number;
-  reviewed_count: number;
-  blocks: string[];
-  blocks_titles: string[];
 }
 
 export interface StageState {

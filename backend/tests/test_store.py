@@ -1,4 +1,4 @@
-"""Storage layer: id-to-filename safety and the remove_paper undo path.
+﻿"""Storage layer: id-to-filename safety and the remove_paper undo path.
 
 Every test here goes through the `isolated_store` fixture. remove_paper
 deletes files, and the real backend/data/ holds the user's library.
@@ -23,7 +23,7 @@ import store
 )
 def test_safe_roundtrips_real_arxiv_ids(paper_id):
     """Pre-2007 ids carry a slash, which is a directory separator on disk.
-    Rejecting them silently dropped every deep dive, card and citation record
+    Rejecting them silently dropped every deep dive, appraisal and citation record
     for those papers, so they must fold to a filename and back."""
     stem = store._safe(paper_id)
     assert stem is not None
@@ -56,7 +56,7 @@ def test_old_style_ids_survive_a_save_load_roundtrip(isolated_store):
 def test_deep_dives_built_from_the_landing_page_are_withheld(isolated_store):
     """Records written before fulltext.py rejected the /abs/ page summarised
     an abstract as if it were the paper. They read as confidently as any other
-    record, so they must not be served — reopening offers a fresh read, which
+    record, so they must not be served â€” reopening offers a fresh read, which
     now refuses with an explanation."""
     isolated_store.save_deep_dive(
         "quant-ph/9903061",
@@ -66,7 +66,7 @@ def test_deep_dives_built_from_the_landing_page_are_withheld(isolated_store):
 
 
 def test_a_withheld_record_is_not_deleted(isolated_store):
-    """Withholding is not destruction — the file stays for inspection."""
+    """Withholding is not destruction â€” the file stays for inspection."""
     isolated_store.save_deep_dive(
         "2307.15883", {"source_url": "https://arxiv.org/abs/2307.15883"}
     )
@@ -92,10 +92,20 @@ def test_a_record_without_a_source_url_is_still_served(isolated_store):
     assert isolated_store.load_deep_dive("x.2") is not None
 
 
-def test_cards_roundtrip_for_old_style_ids(isolated_store):
-    isolated_store.save_cards("quant-ph/9903061", [{"id": "quant-ph/9903061:gen:0"}])
-    assert isolated_store.card_paper_ids() == ["quant-ph/9903061"]
-    assert isolated_store.load_cards("quant-ph/9903061")[0]["id"] == "quant-ph/9903061:gen:0"
+def test_appraisals_roundtrip_for_old_style_ids(isolated_store):
+    isolated_store.save_appraisal("quant-ph/9903061", {"paper_id": "quant-ph/9903061"})
+    assert isolated_store.appraised_paper_ids() == ["quant-ph/9903061"]
+    saved = isolated_store.load_appraisal("quant-ph/9903061")
+    assert saved["paper_id"] == "quant-ph/9903061"
+
+
+def test_deleting_an_appraisal_removes_it_from_the_queue(isolated_store):
+    """Re-running an appraisal has to be possible: the queue is driven by which
+    files exist, so a stale one would keep the paper marked done forever."""
+    isolated_store.save_appraisal("2605.04956", {"paper_id": "2605.04956"})
+    isolated_store.delete_appraisal("2605.04956")
+    assert isolated_store.appraised_paper_ids() == []
+    assert isolated_store.load_appraisal("2605.04956") is None
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +131,7 @@ def populated(isolated_store, papers, search_a):
     }
     s._collection["searches"] = [{"id": search_a["id"], "paper_count": 2}]
     s.save_search(search_a)
-    for directory in ("deep", "index", "s2", "matrix", "cards"):
+    for directory in ("deep", "index", "s2", "matrix", "appraisals"):
         (s.DATA_DIR / directory).mkdir(parents=True, exist_ok=True)
         (s.DATA_DIR / directory / "2005.11401.json").write_text("{}", encoding="utf-8")
     return s
@@ -173,12 +183,12 @@ def test_remove_paper_keeps_the_search_paper_count_honest(populated, search_a):
 
 def test_remove_paper_deletes_the_per_paper_files(populated):
     populated.remove_paper("2005.11401")
-    for directory in ("deep", "index", "s2", "matrix", "cards"):
+    for directory in ("deep", "index", "s2", "matrix", "appraisals"):
         assert not (populated.DATA_DIR / directory / "2005.11401.json").exists()
 
 
 def test_remove_paper_deletes_its_uploaded_pdf(populated):
-    """Removing an uploaded paper is the undo for a mistaken upload — the
+    """Removing an uploaded paper is the undo for a mistaken upload â€” the
     stored PDF must go with it, not linger as an orphaned file forever."""
     populated.save_upload("local-x-abc123", b"%PDF-1.4\nfake but real bytes")
     populated._collection["papers"]["local-x-abc123"] = populated._collection["papers"][
@@ -301,7 +311,7 @@ def test_load_search_returns_none_when_absent(isolated_store):
 
 
 # ---------------------------------------------------------------------------
-# followed_searches — the digest scheduler's input
+# followed_searches â€” the digest scheduler's input
 # ---------------------------------------------------------------------------
 
 def test_followed_searches_sees_a_search_the_follow_endpoint_marked(
@@ -310,7 +320,7 @@ def test_followed_searches_sees_a_search_the_follow_endpoint_marked(
     """The regression that made scheduled digests dead on arrival.
 
     /follow writes `followed` onto the *search file* (via save_search), but the
-    scheduler used to filter collection.json's search metas — which are built
+    scheduler used to filter collection.json's search metas â€” which are built
     once at search-creation time and never carry `followed`. The filter matched
     nothing on every tick, so no automatic digest could ever run while the
     feature looked correct in the UI (which reads the search file).
@@ -321,7 +331,7 @@ def test_followed_searches_sees_a_search_the_follow_endpoint_marked(
     followed = isolated_store.followed_searches()
 
     assert [s["id"] for s in followed] == [search_a["id"]]
-    # The meta deliberately has no `followed` key — proving the lookup reads
+    # The meta deliberately has no `followed` key â€” proving the lookup reads
     # the search file and does not regress to trusting the meta.
     assert "followed" not in isolated_store._collection["searches"][0]
 
@@ -347,7 +357,7 @@ def test_following_survives_a_reload_of_the_search(isolated_store, search_a):
 
 
 # ---------------------------------------------------------------------------
-# _write_atomic — concurrent writers
+# _write_atomic â€” concurrent writers
 # ---------------------------------------------------------------------------
 
 def test_concurrent_writers_to_one_file_do_not_crash(isolated_store):
@@ -362,7 +372,7 @@ def test_concurrent_writers_to_one_file_do_not_crash(isolated_store):
     def writer(n: int) -> None:
         try:
             for _ in range(40):
-                isolated_store.save_cards("2605.04956", [{"writer": n}])
+                isolated_store.save_appraisal("2605.04956", {"writer": n})
         except Exception as exc:  # noqa: BLE001 - the point is to catch any
             errors.append(exc)
 
@@ -373,15 +383,15 @@ def test_concurrent_writers_to_one_file_do_not_crash(isolated_store):
         thread.join()
 
     assert errors == []
-    cards = isolated_store.load_cards("2605.04956")
-    assert len(cards) == 1, "a torn write would leave truncated or invalid JSON"
+    saved = isolated_store.load_appraisal("2605.04956")
+    assert saved is not None, "a torn write would leave truncated or invalid JSON"
 
 
 def test_a_failed_write_leaves_no_temp_file_behind(isolated_store):
     """Temp files are skipped by every glob in the module, but they should not
     accumulate either."""
-    isolated_store.save_cards("2605.04956", [{"q": "a", "a": "b"}])
-    strays = list(isolated_store.CARDS_DIR.glob("*.tmp"))
+    isolated_store.save_appraisal("2605.04956", {"q": "a"})
+    strays = list(isolated_store.APPRAISALS_DIR.glob("*.tmp"))
     assert strays == []
 
 
@@ -431,3 +441,5 @@ def test_removing_a_paper_removes_its_highlights(isolated_store):
     isolated_store.remove_paper("2106.06097")
 
     assert isolated_store.load_highlights("2106.06097") == []
+
+

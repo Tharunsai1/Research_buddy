@@ -1,8 +1,8 @@
-"""Shared fixtures.
+﻿"""Shared fixtures.
 
 The one rule that matters here: a test must never touch backend/data/. That
-directory is the user's real library — papers, deep dives, flashcard review
-history — and `remove_paper` deletes files for a living. Every test that
+directory is the user's real library â€” papers, deep dives, appraisals
+history â€” and `remove_paper` deletes files for a living. Every test that
 reaches the storage layer goes through `isolated_store`, which repoints all of
 store.py's path constants at a tmp directory and swaps in an empty collection.
 """
@@ -17,11 +17,11 @@ import store
 from models import Paper
 
 # Path constants in store.py are read from module scope inside each function,
-# so monkeypatching the module attribute is enough to redirect every write —
+# so monkeypatching the module attribute is enough to redirect every write â€”
 # PROVIDED every constant is listed here. One was not: LIBRARY_INDEX_FILE was
 # added to store.py without a matching line below, so a remove_paper test
 # wrote a fake embedding straight into the real backend/data/library_index.json
-# (caught by inspecting live output, not by this suite — nothing here would
+# (caught by inspecting live output, not by this suite â€” nothing here would
 # have failed). test_every_store_path_constant_is_sandboxed exists so the next
 # omission fails loudly here instead of silently reaching real user data.
 _STORE_DIRS = [
@@ -30,7 +30,7 @@ _STORE_DIRS = [
     "INDEX_DIR",
     "S2_DIR",
     "MATRIX_DIR",
-    "CARDS_DIR",
+    "APPRAISALS_DIR",
     "DIGEST_DIR",
     "UPLOADS_DIR",
     "RESULTS_DIR",
@@ -132,7 +132,7 @@ def _pdf_escape(text: str) -> str:
 
 
 def make_test_pdf(pages: list[list[str]]) -> bytes:
-    """A minimal, real, valid PDF with real text — no reportlab dependency
+    """A minimal, real, valid PDF with real text â€” no reportlab dependency
     just for tests. One Helvetica line per string, top-down from y=740.
 
     Used both for pdf_ingest's own unit tests and to drive a genuine
@@ -225,3 +225,4 @@ def search_b() -> dict:
         "tensions": [{"name": "Autonomy vs control", "description": "Who is in charge."}],
         "open_problems": [{"title": "Evaluation", "description": "No agreed benchmark."}],
     }
+
