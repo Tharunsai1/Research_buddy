@@ -25,6 +25,25 @@ const nextConfig: NextConfig = {
     return [{ source: "/api/:path*", destination: `${BACKEND}/api/:path*` }];
   },
 
+  experimental: {
+    /**
+     * How long the rewrite above will wait for the backend. The default is 30
+     * seconds, and almost nothing this app asks the backend for fits in 30
+     * seconds: a literature matrix is one LLM call per paper, an appraisal is
+     * five, and a deep read is more. Past the limit Next answers the browser
+     * `500 Internal Server Error` with no body — while the backend carries on
+     * and finishes normally, writing its cache.
+     *
+     * That failure is badly disguised. It looks like a backend crash, it is
+     * indistinguishable from one in the UI, and retrying "fixes" it, because
+     * by then the first request has completed and cached its result. It cost
+     * two wrong diagnoses here: the same 500 was read as a per-paper
+     * extraction bug in two different endpoints, both of which answer 200 when
+     * called directly and only fail through the proxy.
+     */
+    proxyTimeout: 15 * 60 * 1000,
+  },
+
   /**
    * Origins `next dev` will serve its dev runtime to. Without this the server
    * answers the HTML and the static chunks from any address, but refuses the
