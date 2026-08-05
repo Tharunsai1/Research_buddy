@@ -1,4 +1,4 @@
-﻿"""Field digests - what changed in a followed search since it was built."""
+"""Field digests - what changed in a followed search since it was built."""
 
 from __future__ import annotations
 
@@ -46,11 +46,11 @@ async def build_digest(
             "challenges the consensus on retrieval noise'.\n"
             "- summary: 3-5 sentences on how the field moved.\n"
             "- highlights: one entry per genuinely notable new paper, where\n"
-            "  Â· index = the paper's [index] from the list below\n"
-            "  Â· why_it_matters = one full sentence on its significance\n"
-            "  Â· relation = one full SENTENCE explaining how it connects to the existing "
-            "themes or papers â€” never a bare label like 'Complementary'\n"
-            "  Â· challenges_consensus = true ONLY if it contradicts or complicates one of "
+            "  · index = the paper's [index] from the list below\n"
+            "  · why_it_matters = one full sentence on its significance\n"
+            "  · relation = one full SENTENCE explaining how it connects to the existing "
+            "themes or papers — never a bare label like 'Complementary'\n"
+            "  · challenges_consensus = true ONLY if it contradicts or complicates one of "
             "the listed consensus points"
         ),
         user=(

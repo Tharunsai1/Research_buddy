@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useRef, useState } from "react";
 import { api } from "@/lib/api";
@@ -9,11 +9,11 @@ interface Props {
 }
 
 /**
- * A paper that isn't on arXiv â€” a camera-ready, something a professor
+ * A paper that isn't on arXiv — a camera-ready, something a professor
  * emailed, a workshop paper never posted. Extracted text flows through the
  * exact same pipeline as an arXiv result: extraction, clustering into the
  * global map, deep dive, appraisal. Only authors/venue are left blank
- * rather than guessed â€” unreliable to parse from arbitrary PDF layouts.
+ * rather than guessed — unreliable to parse from arbitrary PDF layouts.
  */
 export default function UploadPdf({ disabled, onUploaded }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -60,10 +60,10 @@ export default function UploadPdf({ disabled, onUploaded }: Props) {
         type="button"
         onClick={() => inputRef.current?.click()}
         disabled={disabled || busy}
-        title="Add a paper that isn't on arXiv â€” upload any PDF"
+        title="Add a paper that isn't on arXiv — upload any PDF"
         className="shrink-0 rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm font-medium text-stone-700 transition hover:border-stone-400 disabled:opacity-40"
       >
-        {busy ? "Reading PDFâ€¦" : "â¤’ Upload PDF"}
+        {busy ? "Reading PDF…" : "⤒ Upload PDF"}
       </button>
       {error ? <p className="max-w-[240px] text-right text-xs text-red-600">{error}</p> : null}
     </div>

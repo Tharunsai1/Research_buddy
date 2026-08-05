@@ -1,4 +1,4 @@
-﻿"""Research Copilot backend â€” FastAPI app."""
+"""Research Copilot backend — FastAPI app."""
 
 from __future__ import annotations
 
@@ -64,8 +64,8 @@ from rerank import ce_status, warm_cross_encoder  # noqa: E402
 
 # Without this the root logger has no handler and sits at WARNING, so every
 # INFO line the background workers emit is dropped on the floor. They are the
-# only trace those workers leave â€” nothing they do is a request the reader can
-# watch â€” so losing them means a digest or a warm-up that quietly declined to
+# only trace those workers leave — nothing they do is a request the reader can
+# watch — so losing them means a digest or a warm-up that quietly declined to
 # run looks identical to one that never triggered. uvicorn's own loggers carry
 # their own handlers and don't propagate, so they are unaffected.
 logging.basicConfig(
@@ -78,7 +78,7 @@ _scheduler_log = logging.getLogger("research-copilot.scheduler")
 _appraisal_log = logging.getLogger("research-copilot.appraisal")
 _results_log = logging.getLogger("research-copilot.results")
 
-# How often to check whether any followed search is due â€” not the digest
+# How often to check whether any followed search is due — not the digest
 # interval itself (scheduler.DIGEST_INTERVAL_DAYS, ~weekly). Checking hourly
 # costs nothing (a no-op when nothing is due) and means a search becomes
 # current again within an hour of the backend coming back up, rather than
@@ -89,7 +89,7 @@ DIGEST_CHECK_INTERVAL = int(os.getenv("RC_DIGEST_CHECK_INTERVAL", str(60 * 60)))
 async def _run_due_digests() -> None:
     """One scheduler tick: refresh every followed search that's due.
 
-    This can only run while the backend process is alive â€” see scheduler.py.
+    This can only run while the backend process is alive — see scheduler.py.
     Digest runs cost real LLM calls, so this respects the same OpenRouter
     daily cap the model picker already warns about, and silently skips a
     tick entirely rather than partially running through the cap.
@@ -326,7 +326,7 @@ def get_prerequisites(limit: int = 20, search_id: str | None = None):
 @app.get("/api/library/search")
 async def search_library(q: str, limit: int = 10):
     """Semantic search across every paper collected, not just one search's
-    results â€” "which of my papers discussed KV-cache compression?" without
+    results — "which of my papers discussed KV-cache compression?" without
     remembering which search turned it up."""
     papers = {p.id: p for p in store.all_papers()}
     extractions = store.all_extractions()
@@ -364,7 +364,7 @@ def _attach_to_search(search_id: str, paper: Paper, citing: set[str]) -> bool:
     search["paper_ids"].append(paper.id)
     index_of = {pid: i + 1 for i, pid in enumerate(search["paper_ids"])}
 
-    # Papers in *this* search that cite it â€” real citation edges, no LLM call.
+    # Papers in *this* search that cite it — real citation edges, no LLM call.
     local_citing = [pid for pid in search["paper_ids"] if pid in citing]
     for pid in local_citing[:4]:
         search["edges"].append(
@@ -373,7 +373,7 @@ def _attach_to_search(search_id: str, paper: Paper, citing: set[str]) -> bool:
                 "target": paper.id,
                 "kind": "builds_on",
                 "description": (
-                    f"[{index_of[pid]}] cites this paper â€” groundwork this search builds on."
+                    f"[{index_of[pid]}] cites this paper — groundwork this search builds on."
                 ),
                 "real": True,
             }
@@ -403,7 +403,7 @@ def _attach_to_search(search_id: str, paper: Paper, citing: set[str]) -> bool:
             "paper_id": paper.id,
             "stage": "foundation",
             "why": (
-                f"Cited by {len(local_citing)} of the papers in this search â€” "
+                f"Cited by {len(local_citing)} of the papers in this search — "
                 "read it first for the groundwork."
                 if local_citing
                 else "A foundation of this field, added to your map."
@@ -484,12 +484,12 @@ async def add_paper(request: AddPaperRequest):
     }
 
 
-MAX_UPLOAD_BYTES = 40 * 1024 * 1024  # 40MB â€” comfortably above a typical paper
+MAX_UPLOAD_BYTES = 40 * 1024 * 1024  # 40MB — comfortably above a typical paper
 
 
 @app.post("/api/papers/upload")
 async def upload_paper(file: UploadFile = File(...)):
-    """A paper that isn't on arXiv â€” a camera-ready, something emailed by a
+    """A paper that isn't on arXiv — a camera-ready, something emailed by a
     professor, a workshop paper never posted. Extracted text flows through
     the exact same extraction, clustering, deep-dive and flashcard machinery
     as an arXiv result; only where the full text is fetched from differs
@@ -526,7 +526,7 @@ async def upload_paper(file: UploadFile = File(...)):
     store.save_upload(paper.id, data)
     store.merge_search_results("Uploaded", [paper], {paper.id: extraction})
 
-    # Place it in the global map the same way a real search's results are â€”
+    # Place it in the global map the same way a real search's results are —
     # incremental past FULL_RECLUSTER_MAX, so this stays cheap regardless of
     # library size.
     snapshot = store.collection_snapshot()
@@ -613,7 +613,7 @@ def mark_read(request: ReadRequest):
 
 
 # ---------------------------------------------------------------------------
-# Deep dive â€” full-text reading of a single paper
+# Deep dive — full-text reading of a single paper
 # ---------------------------------------------------------------------------
 
 async def _run_deep_dive(job, paper: Paper) -> None:
@@ -621,12 +621,12 @@ async def _run_deep_dive(job, paper: Paper) -> None:
         stage = job.stage("fetch")
         stage.status = "active"
 
-        # An uploaded paper's text already lives on disk â€” no arXiv fetch
+        # An uploaded paper's text already lives on disk — no arXiv fetch
         # applies (there's nothing to fetch it from). Every stage after this
         # one operates on the same FullText shape regardless of source.
         upload_bytes = store.load_upload(paper.id)
         if upload_bytes is not None:
-            stage.detail = "Reading the uploaded PDFâ€¦"
+            stage.detail = "Reading the uploaded PDF…"
             full = await asyncio.to_thread(
                 pdf_ingest.fulltext_from_pdf, paper.id, upload_bytes, paper.abstract
             )
@@ -637,20 +637,20 @@ async def _run_deep_dive(job, paper: Paper) -> None:
                     "extraction and flashcards built from the abstract still work."
                 )
         else:
-            stage.detail = "Fetching full text from arXivâ€¦"
+            stage.detail = "Fetching full text from arXiv…"
             full = await asyncio.to_thread(load_fulltext, paper.id)
             if full is None:
                 # Deliberately refuse rather than read whatever arXiv served. For a
                 # paper with no HTML rendering arXiv returns the /abs/ landing page,
                 # and summarising that produces a confident-looking deep dive built
-                # from an abstract â€” worse than no deep dive at all.
+                # from an abstract — worse than no deep dive at all.
                 raise RuntimeError(
                     "arXiv has no HTML full text for this paper, only the abstract page "
                     "(papers before ~2023 are often PDF-only), so there is nothing to read "
                     "in depth. The summary, extraction and flashcards built from the "
-                    "abstract still work â€” open the PDF for the full paper."
+                    "abstract still work — open the PDF for the full paper."
                 )
-        stage.detail = f"{full.total_words:,} words Â· {len(full.sections)} sections"
+        stage.detail = f"{full.total_words:,} words · {len(full.sections)} sections"
         stage.status = "done"
         job.partial["source_url"] = full.source_url
         job.partial["total_words"] = full.total_words
@@ -698,7 +698,7 @@ async def _run_deep_dive(job, paper: Paper) -> None:
 
         stage = job.stage("index")
         stage.status = "active"
-        stage.detail = "Embedding the paper for chatâ€¦"
+        stage.detail = "Embedding the paper for chat…"
         records = await build_index(full)
         store.save_index(paper.id, records)
         deep.chunk_count = len(records)
@@ -759,7 +759,7 @@ def get_deep_dive(paper_id: str):
 
 
 # ---------------------------------------------------------------------------
-# Prefetch â€” warming a paper's deep read before it is clicked
+# Prefetch — warming a paper's deep read before it is clicked
 # ---------------------------------------------------------------------------
 
 _prefetch_log = logging.getLogger("research-copilot.prefetch")
@@ -785,7 +785,7 @@ async def _drain_prefetch_queue() -> None:
 
     Serial on purpose. run_deep_dive already fans a single paper out to
     several concurrent calls, so warming a second paper next to the one the
-    reader is watching would slow that read down â€” the exact opposite of what
+    reader is watching would slow that read down — the exact opposite of what
     warming is for. The queue therefore yields to any running job, including
     a read the reader started by hand, and only then takes its turn.
     """
@@ -808,7 +808,7 @@ async def _drain_prefetch_queue() -> None:
         if hold:
             # Leave the queue intact: the reader may switch engines or the cap
             # may roll over, and the next request restarts the worker.
-            _prefetch_log.info("holding off on warming %s â€” %s", paper_id, hold)
+            _prefetch_log.info("holding off on warming %s — %s", paper_id, hold)
             return
 
         if _deep_job_running():
@@ -832,9 +832,9 @@ async def _drain_prefetch_queue() -> None:
             _prefetch_current = None
         if job.status == "error":
             # Almost always a paper arXiv only publishes as PDF, which will
-            # fail identically forever â€” remember it so the queue moves on.
+            # fail identically forever — remember it so the queue moves on.
             _prefetch_failed.add(paper_id)
-            _prefetch_log.info("could not warm %s â€” %s", paper_id, job.error)
+            _prefetch_log.info("could not warm %s — %s", paper_id, job.error)
 
 
 class PrefetchRequest(BaseModel):
@@ -876,14 +876,14 @@ def _prefetch_state() -> dict[str, Any]:
 def prefetch_status():
     """What the warm-up queue is doing, so the paper list can show it.
 
-    Read-only and cheap â€” no disk, no model â€” because the list polls it while
+    Read-only and cheap — no disk, no model — because the list polls it while
     it is open.
     """
     return _prefetch_state()
 
 
 # ---------------------------------------------------------------------------
-# Highlights â€” passages the reader marked
+# Highlights — passages the reader marked
 # ---------------------------------------------------------------------------
 
 @app.get("/api/highlights")
@@ -935,7 +935,7 @@ class NoteRequest(BaseModel):
 
 @app.get("/api/papers/{paper_id:path}/note")
 def get_note(paper_id: str):
-    """The reader's own free-text note on a paper â€” separate from anything
+    """The reader's own free-text note on a paper — separate from anything
     AI-generated, and the one place in the app where their own thinking lives."""
     return {"paper_id": paper_id, "text": store.get_note(paper_id)}
 
@@ -991,6 +991,7 @@ async def build_matrix(request: PaperIdsRequest, refresh: bool = False):
 
     status = await llm.provider_status()
     rows: list[dict] = []
+    failed: list[dict] = []
     for paper in papers:
         cached = None if refresh else store.load_matrix_row(paper.id)
         if cached is not None:
@@ -998,17 +999,26 @@ async def build_matrix(request: PaperIdsRequest, refresh: bool = False):
             continue
         if not status["ready"]:
             raise HTTPException(400, status["detail"])
+        # Same rule as the results ledger: one paper must not cost the others.
+        # A row is an LLM call, and a single bad reply used to discard every
+        # row already built in the request — 8 papers' work lost to one, with
+        # nothing on screen saying which paper or why.
         try:
             row = await build_matrix_row(paper, extractions.get(paper.id))
-        except llm.LLMError as exc:
-            raise HTTPException(502, str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - one paper's failure is data, not a crash
+            _results_log.exception("matrix row failed for %s", paper.id)
+            failed.append({"paper_id": paper.id, "title": paper.title, "reason": str(exc)[:300]})
+            continue
         store.save_matrix_row(paper.id, row.model_dump())
         rows.append(row.model_dump())
-    return {"rows": rows}
+
+    if failed and not rows:
+        raise HTTPException(502, failed[0]["reason"] or "Matrix extraction failed.")
+    return {"rows": rows, "failed": failed}
 
 
 # ---------------------------------------------------------------------------
-# Code / reproducibility signals â€” pure text scan, no LLM, no network
+# Code / reproducibility signals — pure text scan, no LLM, no network
 # ---------------------------------------------------------------------------
 
 def _scan_text_for(paper_id: str, paper: Paper) -> tuple[str, bool]:
@@ -1036,7 +1046,7 @@ def library_artifacts():
     """Code availability + reproducibility signals for every paper.
 
     Free and instant (regex over text already on disk), so this is computed
-    on request rather than cached â€” no staleness to manage.
+    on request rather than cached — no staleness to manage.
     """
     papers = _papers_by_id()
     out = []
@@ -1342,7 +1352,7 @@ def appraisal_progress(search_id: str | None = None):
 
 async def _build_and_save_digest(search: dict, max_new: int = 6) -> Digest:
     """The digest logic itself, shared by the on-demand endpoint and the
-    background scheduler for followed searches â€” one place that decides what
+    background scheduler for followed searches — one place that decides what
     a digest run does, so a manual check and an automatic one behave
     identically."""
     search_id = search["id"]
@@ -1361,7 +1371,7 @@ async def _build_and_save_digest(search: dict, max_new: int = 6) -> Digest:
             new_paper_ids=[],
             headline="No new papers since your last check.",
             summary=(
-                f"Checked {len(candidates)} candidates on arXiv for â€œ{query}â€. "
+                f"Checked {len(candidates)} candidates on arXiv for “{query}”. "
                 "Everything relevant is already in your library."
             ),
             highlights=[],
@@ -1375,7 +1385,7 @@ async def _build_and_save_digest(search: dict, max_new: int = 6) -> Digest:
     digest = await build_digest(search, fresh, extractions, len(candidates))
 
     # Fold the new papers into the library, then actually place them on the
-    # global map. merge_search_results only records the papers â€” without the
+    # global map. merge_search_results only records the papers — without the
     # update below every digest silently added papers that existed in the
     # library but appeared nowhere on the reading map, so the header count and
     # the map disagreed. Mirrors the upload path.
@@ -1430,7 +1440,7 @@ class FollowRequest(BaseModel):
 @app.post("/api/searches/{search_id}/follow")
 def set_followed(search_id: str, request: FollowRequest):
     """Mark a search to auto-refresh its field digest roughly weekly, while
-    the backend process is running (see the scheduler in lifespan) â€” there is
+    the backend process is running (see the scheduler in lifespan) — there is
     no external cron here, so "weekly" means "next time a week has passed
     and the backend happens to be up," not a guaranteed wall-clock trigger.
     """
@@ -1466,7 +1476,7 @@ async def chat_with_paper(paper_id: str, request: ChatRequest):
     index = store.load_index(paper_id)
     if not index:
         raise HTTPException(
-            400, "Read the full paper first â€” chat needs the indexed full text."
+            400, "Read the full paper first — chat needs the indexed full text."
         )
     try:
         answer = await chat_with_paper_impl(paper, question, index, anchor=anchor)

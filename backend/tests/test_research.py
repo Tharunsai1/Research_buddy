@@ -1,4 +1,4 @@
-﻿"""Search diffing and the field report â€” both pure, both LLM-free."""
+"""Search diffing and the field report — both pure, both LLM-free."""
 
 from __future__ import annotations
 
@@ -66,7 +66,7 @@ def test_a_search_against_itself_shows_no_change(search_a, papers):
 
 
 def test_diff_is_directional(search_a, search_b, papers):
-    """Swapping the operands swaps the columns â€” the UI labels one side
+    """Swapping the operands swaps the columns — the UI labels one side
     'then' and the other 'now', so this must not be symmetric."""
     forward = diff_searches(search_a, search_b, papers)
     backward = diff_searches(search_b, search_a, papers)
@@ -157,7 +157,7 @@ def test_report_omits_the_notes_section_when_there_are_none(search_a, papers):
 
 def test_report_only_shows_notes_for_papers_in_this_search(search_a, papers):
     """A note on a paper from an unrelated search must not leak into this
-    report â€” notes are library-wide but the report is search-scoped."""
+    report — notes are library-wide but the report is search-scoped."""
     notes = {"2006.11239": "a note on a paper not in search_a"}
     report = build_field_report(search_a, papers, CARD_STATS, notes)
     assert "## Your notes" not in report

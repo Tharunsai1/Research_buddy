@@ -1,4 +1,4 @@
-﻿"""Disk persistence (JSON files under backend/data) + in-memory job registry."""
+"""Disk persistence (JSON files under backend/data) + in-memory job registry."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ _EMPTY: dict[str, Any] = {
 
 
 # Serialises the rename in _write_atomic. Deliberately separate from _lock,
-# which callers such as _save_collection already hold when they write â€”
+# which callers such as _save_collection already hold when they write —
 # threading.Lock is not reentrant, so sharing one would deadlock.
 _write_lock = threading.Lock()
 
@@ -62,7 +62,7 @@ def _write_atomic(path: Path, text: str) -> None:
     * the temp name is unique per call, not a fixed `.tmp` beside the target,
       so concurrent writers never share a source file; and
     * the rename is serialised and retried, because two writers replacing the
-      *same destination* collide even with distinct temp files â€” the failure
+      *same destination* collide even with distinct temp files — the failure
       this was written for. A retry also covers a handle held briefly by
       something outside this process, such as a virus scanner.
 
@@ -265,7 +265,7 @@ def followed_searches() -> list[dict[str, Any]]:
     written by set_followed straight onto the search file, and the metas in
     collection.json are only ever built at search-creation time. Filtering
     the metas instead silently matched nothing, so the digest scheduler
-    could never fire â€” keep this the single source of truth.
+    could never fire — keep this the single source of truth.
     """
     with _lock:
         ids = [meta["id"] for meta in _collection["searches"]]
@@ -279,7 +279,7 @@ def followed_searches() -> list[dict[str, Any]]:
 
 # arXiv's pre-2007 ids carry a slash ("quant-ph/9903061"). A slash is a
 # directory separator on disk, so it is folded into the filename rather than
-# rejected â€” rejecting it silently dropped every deep dive, index, card and
+# rejected — rejecting it silently dropped every deep dive, index, card and
 # citation record for those papers.
 _SAFE_ID = re.compile(r"[A-Za-z0-9._/-]+")
 
@@ -292,7 +292,7 @@ def _safe(paper_id: str) -> str | None:
 
 
 def _unsafe(stem: str) -> str:
-    """Inverse of `_safe` â€” recover the paper id from a filename stem."""
+    """Inverse of `_safe` — recover the paper id from a filename stem."""
     return stem.replace("__", "/")
 
 
@@ -308,7 +308,7 @@ def _built_from_landing_page(deep: dict[str, Any]) -> bool:
     """True for records written before fulltext.py learned to reject the
     arXiv /abs/ page.
 
-    Those reads summarised the landing page â€” abstract and metadata â€” as if it
+    Those reads summarised the landing page — abstract and metadata — as if it
     were the paper, so their `source_url` points at /abs/ rather than a
     rendering. Nothing downstream can tell such a record from a real one, and
     it reads as confidently as any other, so it is withheld rather than served.
@@ -431,7 +431,7 @@ def load_matrix_row(paper_id: str) -> dict[str, Any] | None:
 
 
 def save_results(paper_id: str, rows: list[dict[str, Any]]) -> None:
-    """Reported numbers for one paper. An empty list is saved, not skipped â€”
+    """Reported numbers for one paper. An empty list is saved, not skipped —
     "we extracted this paper and it reports nothing" has to be distinguishable
     from "we never looked", or the scoreboard re-extracts it on every open."""
     if not _safe(paper_id):
@@ -603,7 +603,7 @@ def load_digests(search_id: str) -> list[dict[str, Any]]:
 def remove_paper(paper_id: str) -> dict[str, Any]:
     """Undo: drop a paper from the library, every search, and every per-paper file.
 
-    Exists mainly for the "+ Add" prerequisite flow â€” a paper placed in the
+    Exists mainly for the "+ Add" prerequisite flow — a paper placed in the
     wrong cluster (or the wrong search entirely) previously had no way back
     out short of asking for a manual fix. Works for any paper, not just added
     prerequisites.

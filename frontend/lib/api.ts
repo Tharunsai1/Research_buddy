@@ -1,4 +1,4 @@
-﻿import type {
+import type {
   AppState,
   Appraisal,
   AppraisalProgress,
@@ -26,7 +26,7 @@
 
 /** Empty by default: next.config.ts rewrites `/api/*` to the backend, so a
  *  relative URL resolves against whichever host served the page. That is what
- *  lets the same build work on this machine and from an iPad on the network â€”
+ *  lets the same build work on this machine and from an iPad on the network —
  *  a baked-in address would be wrong on one of them. Set
  *  NEXT_PUBLIC_API_BASE only to point at a backend somewhere else entirely. */
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "";
@@ -219,7 +219,7 @@ export const api = {
     formData.append("file", file);
     let response: Response;
     try {
-      // No Content-Type header here on purpose â€” the browser sets the
+      // No Content-Type header here on purpose — the browser sets the
       // multipart boundary itself; forcing application/json (request<T>'s
       // default) would break the upload.
       response = await fetch(`${API_BASE}/api/papers/upload`, { method: "POST", body: formData });
