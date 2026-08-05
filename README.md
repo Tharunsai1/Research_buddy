@@ -67,23 +67,39 @@ dense to read without it.
 - **Compare two** — any two papers side by side on problem, method, results,
   strengths, limitations, and when to use each.
 
-**Learning loop** — for actually retaining what you read:
+**Critical appraisal** — working through the search's papers one at a time
+against a reviewer's checklist, rather than only summarising them:
 
-- **Study deck** — flashcards per paper. Definition cards come free from the
-  glossary; the model adds *concept*, *result*, and *critique* cards.
-  *Relationship* cards test papers against each other — "how does X build on
-  Y?" — reusing the map's own edge descriptions, so they cost nothing to
-  generate and appear automatically. A **Quiz on** selector scopes the whole
-  deck (and the quiz pool) to one cluster instead of the full search, so you
-  can test whether you understand how a sub-theme's papers relate, not just
-  each one in isolation — a relationship card only counts as in-scope when
-  *both* papers it connects are in the selected cluster. Export to **Anki**
-  (tab-separated, tagged per paper).
-- **Quiz mode** — answer in your own words and the model grades against the
-  paper (or, for a relationship card, against the edge description): verdict,
-  0–100 score, what you missed, and the reference answer. Grades drive
-  **spaced repetition** (SM-2 lite): correct → 1, 3, 8… days; wrong → back to
-  tomorrow. *Quiz me* shows only what's due.
+- **The checklist** is Chris Lovejoy's questions for papers applying machine
+  learning to healthcare — Overview, Data, Methodology, Performance,
+  Conclusions. The sections generalise past healthcare, since every empirical
+  paper has data, a method, a claimed result and a conclusion someone has to
+  judge, so the *intent* of each question is kept and the wording adapts to the
+  paper in front of it. One LLM call per section, then a verdict over the
+  answers — the Conclusions questions genuinely depend on having worked through
+  the rest, so they run last, over the answers rather than over the paper.
+- **A queue, not a list.** Finishing a paper advances to the next one with no
+  appraisal yet, in the search's own order. Progress is which appraisal files
+  exist on disk rather than component state, so closing the tab loses nothing.
+- **The questions match the kind of paper.** The checklist assumes an empirical
+  study, so it branches on the `paper_type` the extraction already carries: a
+  survey is asked what literature it covers, how papers were selected and whose
+  work is missing; a theory paper what it assumes and what is proven rather
+  than asserted; a dataset paper how it was annotated and licensed. Asked the
+  stock questions a survey answers "not reported" down the page — which reads
+  as a broken feature when the truth is that the wrong questions were asked.
+- **Three ways of not answering, and only two are criticisms.** *not reported*
+  means the paper should have said and didn't. *partial* means it half did.
+  *not applicable* means the checklist asked something this kind of paper never
+  had to answer — shown in grey, and explicitly not counted against the paper
+  when the verdict is written.
+- **It says which text it read.** An appraisal built from the abstract alone
+  answers the Overview questions and almost nothing under Data or Performance,
+  so it is labelled as such rather than passing for a full read. Deep-read the
+  paper first and it uses the full text.
+
+**Keeping up** — for when the field moves after you have mapped it:
+
 - **What's new in this field** — re-runs a saved search against arXiv, keeps
   only papers you don't have, and reports what changed, flagging anything that
   **challenges the consensus** you already mapped. New papers fold into the
@@ -95,8 +111,8 @@ dense to read without it.
   you already have — no LLM call, so it's instant.
 - **Field report** — the *⤓ Field report* button next to the map bundles a
   search's overview, method clusters (with links), tensions, consensus, open
-  problems, suggested reading order, and your flashcard progress into one
-  Markdown file — something to keep, paste into notes, or hand to someone
+  problems, suggested reading order, and how many papers you have appraised
+  into one Markdown file — something to keep, paste into notes, or hand to someone
   else. No LLM call; it's all data the search already produced.
 
 ## Stack
@@ -117,7 +133,7 @@ dense to read without it.
 
 The header has a **model picker** — flip between the hosted and local model at
 any time without restarting. The choice applies to every subsequent search,
-deep read, quiz and chat, and is saved to `backend/data/settings.json` so it
+deep read, appraisal and chat, and is saved to `backend/data/settings.json` so it
 survives a restart. Work already written to disk is untouched.
 
 | Model | Where | Trade-off |
@@ -208,8 +224,8 @@ cd backend
 .venv\Scripts\python -m pytest
 ```
 
-The suite covers the deterministic, LLM-free logic — card scheduling and id
-conventions, search diffing, the field report, map partitioning, the storage
+The suite covers the deterministic, LLM-free logic — id conventions and the
+appraisal store, search diffing, the field report, map partitioning, the storage
 layer, and the meta-commentary guard. Provider calls are stubbed, so it makes
 no network requests, costs nothing, and runs in well under a second. Tests are
 sandboxed to a tmp directory and never read or write `backend/data/`.
@@ -300,15 +316,11 @@ depends on your GPU (the pipeline makes ~11 LLM calls per search). With
   Summary/Explain/Sections/Critique tab and a *💬 Ask about this* button
   appears. It switches to Chat with that exact passage injected as excerpt
   `[0]` — the model's primary anchor — rather than hoping retrieval finds it.
-- **Reading nudges** — if you're quizzing poorly on a foundation-stage paper
-  and a later paper in that search's reading order explicitly builds on it,
-  a banner suggests rereading it first. Pure join of flashcard scores and the
-  landscape's own edges; no LLM call.
 - **Upload a PDF** — *⤒ Upload PDF* in the header adds a paper that isn't on
   arXiv (a camera-ready, something emailed, a workshop paper). Text extraction
   is heuristic (heading detection, falling back to fixed-size chunks), and
   author/venue lists are left blank rather than guessed wrong — everything
-  else (extraction, clustering, deep dive, flashcards) runs unchanged.
+  else (extraction, clustering, deep dive, appraisal) runs unchanged.
 - **Follow a field** — a toggle on the field digest auto-refreshes it roughly
   weekly, respecting the OpenRouter daily cap. This runs in-process, only
   while the backend is up — there's no external cron, so a check due while
@@ -356,8 +368,9 @@ backend/
   semantic_scholar.py  cached, rate-limited Graph API client
   citations.py     real citation edges, metrics, prerequisite ranking
   research.py      survey-matrix rows, related-work + BibTeX, comparisons
-  learning.py      flashcards, SM-2 scheduling, answer grading, field digests,
-                   reading nudges (quiz scores × reading-order edges)
+  appraisal.py     the reviewer checklist — per-section questions that branch
+                   on paper type, then a verdict over the answers
+  learning.py      field digests ("what's new in this field")
   library_search.py  semantic search over the whole library (embed once, cache)
   pdf_ingest.py    uploaded-PDF text extraction into the same Paper/FullText
                    shapes fulltext.py produces from arXiv HTML
@@ -378,10 +391,9 @@ frontend/
   components/Timeline.tsx         clusters on a shared time axis
   components/Prerequisites.tsx    "read these first" + add-to-map
   components/ResearchToolkit.tsx  matrix / related work / compare
-  components/StudyDeck.tsx        flashcards + graded quiz mode
+  components/PaperAppraisal.tsx   checklist queue, one paper at a time
   components/FieldDigest.tsx      "what's new" + follow toggle for auto-digests
   components/LibrarySearch.tsx    semantic search over the whole library
-  components/ReadingNudges.tsx    "shaky on X, reread it first" banner
   components/UploadPdf.tsx        add a paper that isn't on arXiv
   components/…                    pipeline card, clusters, relationships graph,
                                   tensions, consensus, open problems, reading order
